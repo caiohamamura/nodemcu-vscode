@@ -95,3 +95,11 @@ export function diffSelectedModules(before: string[], after: string[]): { added:
     removed: before.filter((m) => !afterSet.has(m)),
   };
 }
+
+export function isCModulesConfigChanged(headerPath: string, config: NodemcuConfig): boolean {
+  if (!fs.existsSync(headerPath)) return true;
+  const currentContent = fs.readFileSync(headerPath, "utf-8");
+  const expectedContent = generateUserModulesHeader(config);
+  return currentContent !== expectedContent;
+}
+
