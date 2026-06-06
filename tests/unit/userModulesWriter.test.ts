@@ -7,6 +7,7 @@ import {
   writeUserModulesHeader,
   readSelectedModules,
   diffSelectedModules,
+  isCModulesConfigChanged,
 } from "../../src/build/userModulesWriter";
 import { defaultConfig } from "../../src/config/nodemcuIni";
 
@@ -153,5 +154,24 @@ describe("diffSelectedModules", () => {
     const d = diffSelectedModules(["wifi", "mqtt"], ["wifi", "mqtt"]);
     expect(d.added).toEqual([]);
     expect(d.removed).toEqual([]);
+  });
+});
+
+describe("isCModulesConfigChanged", () => {
+  it("returns true if the header file does not exist", () => {
+    const headerPath = path.join(tmp, "missing.h");
+    const cfg = defaultConfig();
+    expect(isCModulesConfigChanged(headerPath, cfg)).toBe(true);
+  });
+
+  it("returns false if header matches current configuration, and true if they differ", () => {
+    const headerPath = path.join(tmp, "user_modules.h");
+    const cfg = defaultConfig();
+    cfg.c_modules = { wifi: true, gpio: true };
+    writeUserModulesHeader(headerPath, cfg);
+    expect(isCModulesConfigChanged(headerPath, cfg)).toBe(false);
+
+    cfg.c_modules.wifi = false;
+    expect(isCModulesConfigChanged(headerPath, cfg)).toBe(true);
   });
 });
