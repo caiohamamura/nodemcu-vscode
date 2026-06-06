@@ -47,9 +47,7 @@ export class BuildManager {
       const modulesSrcDir = path.join(ctx.firmwarePath, "app", "modules");
       const appCMakeLists = path.join(ctx.firmwarePath, "app", "CMakeLists.txt");
       const parseModulesCmake = path.join(ctx.firmwarePath, "cmake", "parse_user_modules_h.cmake");
-      const stampDir = path.join(buildDir, "firmware-prefix", "src", "firmware-stamp");
-      const libA = path.join(buildDir, "firmware_build", "modules", "libmodules.a");
-      const linkTxt = path.join(buildDir, "firmware_build", "CMakeFiles", "app.elf.dir", "link.txt");
+
       let headerMtime = 0;
       try { headerMtime = fs.statSync(headerPath).mtimeMs; } catch { }
       const futureTime = new Date(headerMtime + 2000);
@@ -80,9 +78,6 @@ export class BuildManager {
           }
         } catch {
         }
-      }
-      for (const f of [libA, linkTxt, path.join(stampDir, "firmware-build"), path.join(stampDir, "firmware-done"), path.join(stampDir, "firmware-install"), path.join(stampDir, "firmware-configure")]) {
-        try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { }
       }
     }
 
