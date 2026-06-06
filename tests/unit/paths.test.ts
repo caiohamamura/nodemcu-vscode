@@ -36,27 +36,27 @@ describe("path utilities", () => {
 
   describe("helpers", () => {
     it("defaultBuildDir is firmware/build", () => {
-      expect(defaultBuildDir("/fw")).toBe("/fw/build");
+      expect(defaultBuildDir("/fw")).toBe(path.join("/fw", "build"));
     });
 
     it("userModulesHeader is firmware/app/include/user_modules.h", () => {
-      expect(userModulesHeader("/fw")).toBe("/fw/app/include/user_modules.h");
+      expect(userModulesHeader("/fw")).toBe(path.join("/fw", "app", "include", "user_modules.h"));
     });
 
     it("esptoolScript is firmware/tools/toolchains/esptool.py", () => {
-      expect(esptoolScript("/fw")).toBe("/fw/tools/toolchains/esptool.py");
+      expect(esptoolScript("/fw")).toBe(path.join("/fw", "tools", "toolchains", "esptool.py"));
     });
 
     it("luaModulesDir is firmware/lua_modules", () => {
-      expect(luaModulesDir("/fw")).toBe("/fw/lua_modules");
+      expect(luaModulesDir("/fw")).toBe(path.join("/fw", "lua_modules"));
     });
 
     it("appModulesDir is firmware/app/modules", () => {
-      expect(appModulesDir("/fw")).toBe("/fw/app/modules");
+      expect(appModulesDir("/fw")).toBe(path.join("/fw", "app", "modules"));
     });
 
     it("binOutput is firmware/bin", () => {
-      expect(binOutput("/fw")).toBe("/fw/bin");
+      expect(binOutput("/fw")).toBe(path.join("/fw", "bin"));
     });
   });
 
