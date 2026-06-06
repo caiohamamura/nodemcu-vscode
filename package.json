@@ -58,6 +58,10 @@
           "contextualTitle": "NodeMCU Device Explorer"
         },
         {
+          "id": "nodemcu.projectTasks",
+          "name": "Project Tasks"
+        },
+        {
           "id": "nodemcu.luaModules",
           "name": "Lua Modules",
           "contextualTitle": "NodeMCU Lua Modules"
@@ -83,7 +87,8 @@
       { "command": "nodemcu-vscode.toggleCModule", "title": "NodeMCU: Toggle C Module", "category": "NodeMCU" },
       { "command": "nodemcu-vscode.regenerateLuaApi", "title": "NodeMCU: Regenerate Lua API Stubs", "category": "NodeMCU" },
       { "command": "nodemcu-vscode.openIni", "title": "NodeMCU: Open nodemcu.ini", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.openSerialMonitor", "title": "NodeMCU: Open Serial Monitor", "category": "NodeMCU" }
+      { "command": "nodemcu-vscode.openSerialMonitor", "title": "NodeMCU: Open Serial Monitor", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.selectPort", "title": "NodeMCU: Select Port", "category": "NodeMCU" }
     ],
     "menus": {
       "view/item/context": [
@@ -165,7 +170,7 @@
     "test:e2e": "vitest run tests/e2e",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "package": "vsce package",
+    "package": "npx @vscode/vsce package",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
