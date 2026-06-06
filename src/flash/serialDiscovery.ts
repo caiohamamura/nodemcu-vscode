@@ -10,7 +10,25 @@ export interface SerialPort {
 export class SerialDiscovery {
   constructor(private shell: Shell) {}
 
-  async listLinux(): Promise<SerialPort[]> {
+  async list(): Promise<SerialPort[]> {
+    try {
+      // Use dynamic import to prevent activation failure if serialport is somehow broken
+      const serialport = await import("serialport");
+      const ports = await serialport.SerialPort.list();
+      return ports.map(p => ({
+        path: p.path,
+        manufacturer: p.manufacturer || (p as any).friendlyName,
+        productId: p.productId,
+        vendorId: p.vendorId
+      }));
+    } catch (e) {
+      console.warn("serialport failed, falling back to manual discovery", e);
+      if (process.platform === "win32") return this.listWindows();
+      return this.listLinux();
+    }
+  }
+
+  private async listLinux(): Promise<SerialPort[]> {
     const ports: SerialPort[] = [];
     const candidates = await this.globDevices(["/dev/ttyUSB*", "/dev/ttyACM*", "/dev/cu.usbserial*", "/dev/cu.SLAB*", "/dev/cu.usbmodem*"]);
     for (const path of candidates) {
@@ -19,7 +37,7 @@ export class SerialDiscovery {
     return ports;
   }
 
-  async listWindows(): Promise<SerialPort[]> {
+  private async listWindows(): Promise<SerialPort[]> {
     const r = await this.shell.run("powershell", [
       "-NoProfile",
       "-Command",
@@ -31,11 +49,6 @@ export class SerialDiscovery {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && /^COM\d+/i.test(l))
       .map((path) => ({ path }));
-  }
-
-  async list(): Promise<SerialPort[]> {
-    if (process.platform === "win32") return this.listWindows();
-    return this.listLinux();
   }
 
   private async globDevices(patterns: string[]): Promise<string[]> {

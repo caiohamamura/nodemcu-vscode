@@ -26,6 +26,7 @@ import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
 let outputChannel: vscode.OutputChannel;
 let statusEmitter: StatusEmitter;
 let statusBarItem: vscode.StatusBarItem;
+let portStatusBarItem: vscode.StatusBarItem;
 let watcher: ConfigWatcher | undefined;
 let cachedConfig: NodemcuConfig | null = null;
 let cachedFirmwarePath: string | null = null;
@@ -115,6 +116,32 @@ function setStatus(state: BuildState, text: string, detail?: string): void {
   statusBarItem.show();
 }
 
+async function updatePortStatusBar(cfg: NodemcuConfig | null) {
+  if (!portStatusBarItem) return;
+  const port = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("port") || cfg?.nodemcu.port;
+  if (!port) {
+    portStatusBarItem.text = `$(plug) No Port`;
+    portStatusBarItem.tooltip = "Click to select a serial port";
+    portStatusBarItem.show();
+    return;
+  }
+  
+  // Try to find friendly name
+  let name = "";
+  try {
+    const discovery = new SerialDiscovery(new Shell());
+    const ports = await discovery.list();
+    const p = ports.find(x => x.path === port);
+    if (p && p.manufacturer) {
+      name = ` (${p.manufacturer})`;
+    }
+  } catch (e) {}
+
+  portStatusBarItem.text = `$(plug) ${port}${name}`;
+  portStatusBarItem.tooltip = "Click to select a serial port";
+  portStatusBarItem.show();
+}
+
 async function ensureNodemcuTool(python: string): Promise<boolean> {
   const tool = new NodemcuTool(new Shell());
   if (await tool.isInstalled(python)) return true;
@@ -141,13 +168,32 @@ async function ensureNodemcuTool(python: string): Promise<boolean> {
 async function ensurePort(cfg: NodemcuConfig): Promise<string | null> {
   let port = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("port") ?? cfg.nodemcu.port;
   if (port) return port;
+  return await doSelectPort();
+}
+
+async function doSelectPort(): Promise<string | null> {
   const discovery = new SerialDiscovery(new Shell());
   const ports = await discovery.list();
   if (ports.length === 0) {
     vscode.window.showErrorMessage("No serial ports detected.");
     return null;
   }
-  return await vscode.window.showQuickPick(ports.map((p) => p.path), { placeHolder: "Select serial port" }) ?? null;
+  
+  const items = ports.map((p) => ({
+    label: p.path,
+    description: p.manufacturer ? `(${p.manufacturer})` : "",
+  }));
+  
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: "Select serial port" });
+  if (!pick) return null;
+  
+  const iniPath = getIniPath();
+  if (iniPath && cachedConfig) {
+    cachedConfig.nodemcu.port = pick.label;
+    saveConfig(iniPath, cachedConfig);
+    updatePortStatusBar(cachedConfig);
+  }
+  return pick.label;
 }
 
 async function doBuild(): Promise<void> {
@@ -229,6 +275,16 @@ async function doInitProject(): Promise<void> {
     if (choice !== "Overwrite") return;
   }
   saveConfig(iniPath, defaultConfig());
+
+  const initLuaPath = path.join(path.dirname(iniPath), "init.lua");
+  if (!fs.existsSync(initLuaPath)) {
+    fs.writeFileSync(
+      initLuaPath,
+      'print("Hello World from NodeMCU!")\n\n-- Example WiFi configuration\n-- wifi.setmode(wifi.STATION)\n-- wifi.sta.config({ssid="your_ssid", pwd="your_password"})\n',
+      "utf8",
+    );
+  }
+
   await vscode.window.showTextDocument(vscode.Uri.file(iniPath));
   if (watcher) watcher.stop();
   watcher = new ConfigWatcher(iniPath);
@@ -236,9 +292,11 @@ async function doInitProject(): Promise<void> {
     cachedConfig = c;
     cachedFirmwarePath = null;
     refreshAll();
+    updatePortStatusBar(c);
   });
   cachedConfig = loadConfig(iniPath);
   refreshAll();
+  updatePortStatusBar(cachedConfig);
 }
 
 async function pickWorkspaceFile(): Promise<vscode.Uri | null> {
@@ -433,6 +491,7 @@ function buildLuaModulesProvider(): AsyncTreeProvider {
       collapsibleState: vscode.TreeItemCollapsibleState.None,
       contextValue: "nodemcu.luaModule",
       iconPath: new vscode.ThemeIcon("library"),
+      checkboxState: vscode.TreeItemCheckboxState.Unchecked,
       command: {
         command: "vscode.open",
         title: "Open",
@@ -456,10 +515,58 @@ function buildCModulesProvider(): AsyncTreeProvider {
         description: `${m.category}${enabled ? "  ✓ enabled" : ""}`,
         collapsibleState: vscode.TreeItemCollapsibleState.None,
         contextValue: "nodemcu.cModule",
+        checkboxState: enabled ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked,
         iconPath: new vscode.ThemeIcon(enabled ? "check" : "circle-outline"),
       };
     });
   });
+}
+
+function buildProjectTasksProvider(): AsyncTreeProvider {
+  return new AsyncTreeProvider(async () => [
+    {
+      id: "task-init",
+      label: "Initialize Project",
+      collapsibleState: vscode.TreeItemCollapsibleState.None,
+      iconPath: new vscode.ThemeIcon("new-folder"),
+      command: { command: "nodemcu-vscode.initProject", title: "Initialize" },
+    },
+    {
+      id: "task-build",
+      label: "Build Firmware",
+      collapsibleState: vscode.TreeItemCollapsibleState.None,
+      iconPath: new vscode.ThemeIcon("tools"),
+      command: { command: "nodemcu-vscode.build", title: "Build" },
+    },
+    {
+      id: "task-flash",
+      label: "Flash Firmware",
+      collapsibleState: vscode.TreeItemCollapsibleState.None,
+      iconPath: new vscode.ThemeIcon("zap"),
+      command: { command: "nodemcu-vscode.flash", title: "Flash" },
+    },
+    {
+      id: "task-build-flash",
+      label: "Build & Flash",
+      collapsibleState: vscode.TreeItemCollapsibleState.None,
+      iconPath: new vscode.ThemeIcon("rocket"),
+      command: { command: "nodemcu-vscode.buildAndFlash", title: "Build & Flash" },
+    },
+    {
+      id: "task-upload",
+      label: "Upload File to Device",
+      collapsibleState: vscode.TreeItemCollapsibleState.None,
+      iconPath: new vscode.ThemeIcon("cloud-upload"),
+      command: { command: "nodemcu-vscode.uploadFile", title: "Upload" },
+    },
+    {
+      id: "task-sync-lua",
+      label: "Sync Lua Modules",
+      collapsibleState: vscode.TreeItemCollapsibleState.None,
+      iconPath: new vscode.ThemeIcon("sync"),
+      command: { command: "nodemcu-vscode.syncLuaModules", title: "Sync Lua Modules" },
+    },
+  ]);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -467,18 +574,60 @@ export function activate(context: vscode.ExtensionContext): void {
   statusEmitter = new StatusEmitter();
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = "nodemcu-vscode.openIni";
-  context.subscriptions.push(statusBarItem, outputChannel);
+  
+  portStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  portStatusBarItem.command = "nodemcu-vscode.selectPort";
+  
+  context.subscriptions.push(statusBarItem, portStatusBarItem, outputChannel);
   setStatus("idle", "NodeMCU: idle");
 
   deviceExplorerProvider = buildDeviceExplorerProvider();
   luaModulesProvider = buildLuaModulesProvider();
   cModulesProvider = buildCModulesProvider();
+  const projectTasksProvider = buildProjectTasksProvider();
+  
   void deviceExplorerProvider.reload();
   void luaModulesProvider.reload();
   void cModulesProvider.reload();
+  void projectTasksProvider.reload();
+  
   vscode.window.registerTreeDataProvider("nodemcu.deviceExplorer", deviceExplorerProvider);
-  vscode.window.registerTreeDataProvider("nodemcu.luaModules", luaModulesProvider);
-  vscode.window.registerTreeDataProvider("nodemcu.cModules", cModulesProvider);
+  vscode.window.registerTreeDataProvider("nodemcu.projectTasks", projectTasksProvider);
+
+  const luaTreeView = vscode.window.createTreeView("nodemcu.luaModules", {
+    treeDataProvider: luaModulesProvider,
+    manageCheckboxStateManually: true,
+  });
+  const cTreeView = vscode.window.createTreeView("nodemcu.cModules", {
+    treeDataProvider: cModulesProvider,
+    manageCheckboxStateManually: true,
+  });
+
+  cTreeView.onDidChangeCheckboxState(async (e) => {
+    for (const [item] of e.items) {
+      if (item.contextValue === "nodemcu.cModule") {
+        await doToggleCModule({ module: { name: item.label, category: "optional" } as any });
+      }
+    }
+  });
+
+  luaTreeView.onDidChangeCheckboxState(async (e) => {
+    for (const [item, state] of e.items) {
+      if (item.contextValue === "nodemcu.luaModule") {
+        if (state === vscode.TreeItemCheckboxState.Checked) {
+          await doAddLuaModule({ module: { name: item.label, description: "", mainFile: "" } as any });
+        } else {
+          // Remove it
+          const cfg = getConfigOrNull();
+          if (cfg) {
+            delete cfg.lua_modules[item.label];
+            const iniPath = getIniPath();
+            if (iniPath) saveConfig(iniPath, cfg);
+          }
+        }
+      }
+    }
+  });
 
   const iniPath = getIniPath();
   if (iniPath && fs.existsSync(iniPath)) {
@@ -487,10 +636,13 @@ export function activate(context: vscode.ExtensionContext): void {
       cachedConfig = c;
       cachedFirmwarePath = null;
       refreshAll();
+      updatePortStatusBar(c);
     });
     cachedConfig = watcher.current();
     watcher.start();
   }
+  
+  updatePortStatusBar(cachedConfig);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("nodemcu-vscode.initProject", doInitProject),
@@ -505,6 +657,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.refreshExplorer", doRefreshExplorer),
     vscode.commands.registerCommand("nodemcu-vscode.openIni", doOpenIni),
     vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", doOpenSerialMonitor),
+    vscode.commands.registerCommand("nodemcu-vscode.selectPort", doSelectPort),
   );
 }
 
