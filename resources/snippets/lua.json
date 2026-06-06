@@ -1,0 +1,62 @@
+{
+  "NodeMCU init": {
+    "prefix": "ninit",
+    "body": [
+      "-- NodeMCU initialization",
+      "print(\"NodeMCU starting up...\")",
+      "print(\"Chip ID: \"..node.chipid())",
+      "print(\"Heap: \"..node.heap())",
+      "print(\"Flash size: \"..node.flashsize()..\" bytes\")"
+    ],
+    "description": "Standard NodeMCU startup snippet"
+  },
+  "NodeMCU WiFi STA": {
+    "prefix": "nwifi",
+    "body": [
+      "wifi.setmode(wifi.STATION)",
+      "wifi.sta.config({",
+      "  ssid = \"${1:SSID}\",",
+      "  pwd = \"${2:PASSWORD}\"",
+      "})",
+      "wifi.eventmon.register(wifi.eventmon.STA_CONNECTED, function(t)",
+      "  print(\"WiFi connected: \"..(t.SSID or \"\"))",
+      "end)",
+      "wifi.eventmon.register(wifi.eventmon.STA_GOT_IP, function(t)",
+      "  print(\"IP: \"..t.IP)",
+      "end)"
+    ],
+    "description": "Configure NodeMCU as WiFi station"
+  },
+  "NodeMCU MQTT client": {
+    "prefix": "nmqtt",
+    "body": [
+      "m = mqtt.Client(\"${1:clientid}\", 120, \"${2:user}\", \"${3:pass}\")",
+      "m:on(\"connect\", function(c) print(\"connected\") end)",
+      "m:on(\"message\", function(c, t, p) print(t..\": \"..p) end)",
+      "m:connect(\"${4:broker}\", ${5:1883}, 0, function(c) m:subscribe(\"${6:topic}\", 0, function(c) print(\"subscribed\") end) end)"
+    ],
+    "description": "Connect to an MQTT broker and subscribe to a topic"
+  },
+  "NodeMCU HTTP server": {
+    "prefix": "nhttp",
+    "body": [
+      "srv = net.createServer(net.TCP)",
+      "srv:listen(80, function(c)",
+      "  c:on(\"receive\", function(c, pl)",
+      "    c:send(\"HTTP/1.0 200 OK\\r\\nContent-Type: text/plain\\r\\n\\r\\nHello from NodeMCU\")",
+      "    c:close()",
+      "  end)",
+      "end)"
+    ],
+    "description": "Minimal HTTP server"
+  },
+  "NodeMCU timer": {
+    "prefix": "ntmr",
+    "body": [
+      "tmr.create():alarm(${1:1000}, tmr.ALARM_AUTO, function(t)",
+      "  -- body",
+      "end)"
+    ],
+    "description": "Repeating timer"
+  }
+}

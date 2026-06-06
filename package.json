@@ -1,0 +1,183 @@
+{
+  "name": "nodemcu-vscode",
+  "displayName": "NodeMCU",
+  "description": "Cross-platform Lua firmware development for NodeMCU/ESP8266: build, flash, upload, and explore.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "extensionDependencies": [
+    "sumneko.lua"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "nodemcu",
+    "esp8266",
+    "lua",
+    "iot",
+    "firmware",
+    "embedded"
+  ],
+  "main": "dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:nodemcu.ini",
+    "onCommand:nodemcu-vscode.initProject",
+    "onCommand:nodemcu-vscode.build",
+    "onCommand:nodemcu-vscode.flash",
+    "onCommand:nodemcu-vscode.buildAndFlash",
+    "onCommand:nodemcu-vscode.uploadFile",
+    "onCommand:nodemcu-vscode.downloadFile",
+    "onCommand:nodemcu-vscode.deleteFile",
+    "onCommand:nodemcu-vscode.refreshExplorer",
+    "onCommand:nodemcu-vscode.syncLuaModules",
+    "onCommand:nodemcu-vscode.addLuaModule",
+    "onCommand:nodemcu-vscode.toggleCModule",
+    "onCommand:nodemcu-vscode.regenerateLuaApi",
+    "onCommand:nodemcu-vscode.openIni",
+    "onCommand:nodemcu-vscode.openSerialMonitor"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "nodemcu-vscode",
+          "title": "NodeMCU",
+          "icon": "resources/icons/nodemcu.svg"
+        }
+      ]
+    },
+    "views": {
+      "nodemcu-vscode": [
+        {
+          "id": "nodemcu.deviceExplorer",
+          "name": "Device Explorer",
+          "contextualTitle": "NodeMCU Device Explorer"
+        },
+        {
+          "id": "nodemcu.luaModules",
+          "name": "Lua Modules",
+          "contextualTitle": "NodeMCU Lua Modules"
+        },
+        {
+          "id": "nodemcu.cModules",
+          "name": "C Modules",
+          "contextualTitle": "NodeMCU C Modules"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "nodemcu-vscode.initProject", "title": "NodeMCU: Initialize Project", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.build", "title": "NodeMCU: Build Firmware", "category": "NodeMCU", "key": "ctrl+shift+b" },
+      { "command": "nodemcu-vscode.flash", "title": "NodeMCU: Flash Firmware", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.buildAndFlash", "title": "NodeMCU: Build & Flash", "category": "NodeMCU", "key": "ctrl+alt+b" },
+      { "command": "nodemcu-vscode.uploadFile", "title": "NodeMCU: Upload File to Device", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.downloadFile", "title": "NodeMCU: Download File from Device", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.deleteFile", "title": "NodeMCU: Delete File on Device", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.refreshExplorer", "title": "NodeMCU: Refresh Device Explorer", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.syncLuaModules", "title": "NodeMCU: Sync Lua Modules to Device", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.addLuaModule", "title": "NodeMCU: Add Lua Module from Library", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.toggleCModule", "title": "NodeMCU: Toggle C Module", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.regenerateLuaApi", "title": "NodeMCU: Regenerate Lua API Stubs", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.openIni", "title": "NodeMCU: Open nodemcu.ini", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.openSerialMonitor", "title": "NodeMCU: Open Serial Monitor", "category": "NodeMCU" }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "nodemcu-vscode.uploadFile",
+          "when": "view == nodemcu.luaModules && viewItem == nodemcu.luaModule",
+          "group": "nodemcu"
+        },
+        {
+          "command": "nodemcu-vscode.toggleCModule",
+          "when": "view == nodemcu.cModules && viewItem == nodemcu.cModule",
+          "group": "nodemcu"
+        },
+        {
+          "command": "nodemcu-vscode.downloadFile",
+          "when": "view == nodemcu.deviceExplorer && viewItem == nodemcu.deviceFile",
+          "group": "nodemcu"
+        },
+        {
+          "command": "nodemcu-vscode.deleteFile",
+          "when": "view == nodemcu.deviceExplorer && viewItem == nodemcu.deviceFile",
+          "group": "nodemcu"
+        },
+        {
+          "command": "nodemcu-vscode.refreshExplorer",
+          "when": "view == nodemcu.deviceExplorer",
+          "group": "nodemcu"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "NodeMCU",
+      "properties": {
+        "nodemcu-vscode.firmwarePath": {
+          "type": "string",
+          "default": "../nodemcu-firmware",
+          "description": "Path to the cloned nodemcu-firmware repository, relative to the workspace root or absolute."
+        },
+        "nodemcu-vscode.port": {
+          "type": "string",
+          "default": "",
+          "description": "Serial port (e.g. /dev/ttyUSB0 or COM3). Overrides nodemcu.ini."
+        },
+        "nodemcu-vscode.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable to use for esptool and nodemcu-tool."
+        },
+        "nodemcu-vscode.cmakePath": {
+          "type": "string",
+          "default": "cmake",
+          "description": "CMake executable to use for building the firmware."
+        },
+        "nodemcu-vscode.autoInstallNodemcuTool": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically install the Python `nodemcu-tool` package via pip when missing."
+        },
+        "nodemcu-vscode.outputVerbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show verbose build/flash output."
+        }
+      }
+    },
+    "snippets": [
+      {
+        "language": "lua",
+        "path": "./resources/snippets/lua.json"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "vitest run tests/e2e",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ini": "^5.0.0",
+    "serialport": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/serialport": "^8.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
