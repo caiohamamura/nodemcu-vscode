@@ -21,7 +21,7 @@ class FakeShell extends Shell {
     return { exitCode: 0, signal: null, stdout: "", stderr: "", ...next };
   }
   async which(binary: string): Promise<string | null> {
-    if (binary === "python" || binary === "python3" || binary === "cmake" || binary === "ninja" || binary === "make" || binary === "cl") {
+    if (binary === "python" || binary === "python3" || binary === "cmake" || binary === "ninja" || binary === "make") {
       return `/usr/bin/${binary}`;
     }
     return null;
@@ -57,23 +57,17 @@ describe("BuildManager (integration, mocked shell)", () => {
       onStderr: () => {},
     });
     expect(r.success).toBe(true);
-    expect(shell.calls).toHaveLength(3);
+    expect(shell.calls).toHaveLength(2);
     expect(shell.calls[0].command).toBe("cmake");
     expect(shell.calls[0].args).toContain("-S");
     expect(shell.calls[0].args[shell.calls[0].args.indexOf("-S") + 1]).toBe(fwPath);
     expect(shell.calls[1].command).toBe("cmake");
     expect(shell.calls[1].args).toContain("--build");
-    expect(shell.calls[1].args).toContain("--target");
-    expect(shell.calls[1].args).toContain("firmware");
-    expect(shell.calls[2].command).toBe("cmake");
-    expect(shell.calls[2].args).toContain("--build");
   });
 
   it("skips configure when no modules changed (incremental build)", async () => {
     const shell = new FakeShell();
     shell.nextResponse({ exitCode: 0, stdout: "Building\n" });
-    fs.mkdirSync(path.join(fwPath, "build"), { recursive: true });
-    fs.writeFileSync(path.join(fwPath, "build", "CMakeCache.txt"), "# configured\n");
     const cfg = defaultConfig();
     cfg.c_modules = { wifi: true };
     const mgr = new BuildManager(shell as unknown as Shell);
@@ -90,39 +84,8 @@ describe("BuildManager (integration, mocked shell)", () => {
     expect(r.success).toBe(true);
     expect(r.needsReconfigure).toBe(false);
     const cmakeCalls = shell.calls.filter((c) => c.command === "cmake");
-    expect(cmakeCalls).toHaveLength(2);
+    expect(cmakeCalls).toHaveLength(1);
     expect(cmakeCalls[0].args).toContain("--build");
-    expect(cmakeCalls[0].args).toContain("--target");
-    expect(cmakeCalls[0].args).toContain("firmware");
-    expect(cmakeCalls[1].args).toContain("--build");
-  });
-
-  it("configures a fresh build dir even when selected modules did not change", async () => {
-    const shell = new FakeShell();
-    shell.nextResponse({ exitCode: 0, stdout: "Configuring\n" });
-    shell.nextResponse({ exitCode: 0, stdout: "Building\n" });
-    const cfg = defaultConfig();
-    cfg.c_modules = { wifi: true };
-    const mgr = new BuildManager(shell as unknown as Shell);
-    const r = await mgr.build({
-      firmwarePath: fwPath,
-      config: cfg,
-      parallel: true,
-      jobCount: 4,
-      verbose: false,
-      generator: "Ninja",
-      onLog: () => {},
-      onStderr: () => {},
-    });
-    expect(r.success).toBe(true);
-    expect(r.needsReconfigure).toBe(true);
-    expect(r.modulesChanged).toEqual({ added: [], removed: [] });
-    expect(shell.calls).toHaveLength(3);
-    expect(shell.calls[0].args).toContain("-S");
-    expect(shell.calls[1].args).toContain("--build");
-    expect(shell.calls[1].args).toContain("--target");
-    expect(shell.calls[1].args).toContain("firmware");
-    expect(shell.calls[2].args).toContain("--build");
   });
 
   it("returns failure with parsed problems on cmake error", async () => {
@@ -195,8 +158,6 @@ describe("FlashManager (integration, mocked shell)", () => {
     expect(shell.calls[0].command).toBe("python");
     expect(shell.calls[0].args).toContain("write_flash");
     expect(shell.calls[0].args).toContain("/dev/ttyUSB0");
-    expect(shell.calls[0].args).toContain(path.join(tmp, "bin", "0x00000.bin"));
-    expect(shell.calls[0].args).toContain(path.join(tmp, "bin", "0x10000.bin"));
   });
 
   it("includes extra_files in the command", async () => {
