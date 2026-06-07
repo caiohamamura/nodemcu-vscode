@@ -1,25 +1,145 @@
 ---
 name: devtools-automation
-description: Automates and inspects running VS Code/Electron instances using the Chrome DevTools Protocol (CDP) for E2E user-level validation.
+description: Drive a running VS Code/Electron instance (e.g. the NodeMCU Extension Development Host) over Chrome DevTools Protocol — focus the sidebar, expand panes, inspect/toggle checkbox state, run command-palette commands, capture console logs, reload the window. Use this whenever you need to verify the NodeMCU UI in a real renderer without a human in the loop.
 ---
 
 # DevTools Automation Skill
 
-This skill allows an agent to connect to a running Extension Development Host or any Electron-based editor window with remote debugging enabled (e.g., port `9222`) and simulate user actions, query UI tree-view states, toggle checkboxes, or execute command palette commands.
+This skill allows an agent to connect to a running Extension Development Host or
+any Electron-based editor window with remote debugging enabled (e.g. port `9222`)
+and simulate user actions, query UI tree-view states, toggle checkboxes, or
+execute command palette commands.
+
+For the **production** version of this skill (used in CI), see
+[`tests/e2e/cdp_e2e.test.ts`](../../../tests/e2e/cdp_e2e.test.ts) and
+[`tests/e2e/device_cdp_e2e.test.ts`](../../../tests/e2e/device_cdp_e2e.test.ts).
+The script bundled with this skill (`scripts/cdp-control.js`) is the lightweight
+ad-hoc counterpart for live debugging.
 
 ## Prerequisites
 
-- The Extension Development Host (or target IDE window) must be launched with the `--remote-debugging-port=9222` flag.
-- Node.js version 22+ (so `fetch` and global `WebSocket` are natively available).
+- The Extension Development Host (or target IDE window) must be launched with
+  the `--remote-debugging-port=9222` flag.
+- Node.js 22+ so `fetch` and the global `WebSocket` are natively available.
+- The default port is `9222` (override with the `PORT` env var).
+
+## Launching a fresh Extension Development Host
+
+```powershell
+# Build first so dist/extension.js is current
+npm run build
+
+# On Windows — use code.cmd rather than Code.exe
+$env:VSCODE_E2E_EXECUTABLE = "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd"
+
+# Optional fakes so the host can run without real hardware
+$env:NODEMCU_VSCODE_NODEMCU_TOOL   = "C:\path\to\fake-nodemcu-tool.js"
+$env:NODEMCU_VSCODE_FAKE_SERIAL_PORTS = '[{"path":"COM42","manufacturer":"NodeMCU Test Board"}]'
+
+# Launch a fresh EDH with isolated user-data + extensions dirs
+$code = $env:VSCODE_E2E_EXECUTABLE
+$args = @(
+  "--new-window",
+  "--disable-workspace-trust",
+  "--user-data-dir=C:\temp\user-data",
+  "--extensions-dir=C:\temp\extensions",
+  "--extensionDevelopmentPath=$(Get-Location)",
+  "--remote-debugging-port=9222",
+  "C:\temp\workspace"
+)
+& $code @args
+```
+
+Wait ~5s, then verify the target is reachable:
+
+```bash
+curl http://127.0.0.1:9222/json | Out-String
+```
+
+The title of the relevant target should contain `[Extension Development Host]`.
+
+## Avoiding the first-run AI splash
+
+A brand-new `--user-data-dir` triggers a full first-run flow on every launch:
+a "How do you want to use AI?" / "Use GitHub Copilot?" / "Sign in to set up chat"
+dialog blocks the renderer until dismissed. CDP queries on the workbench
+become flaky because the dialog can intercept the next click target.
+
+The first-run state is per-user-data-dir, not per-install. A profile that has
+already been "configured" (telemetry acknowledged, AI welcome accepted, etc.)
+skips the splash entirely. Two ways to get that pre-configured state:
+
+### Option A — reuse the current user's profile (quickest)
+
+Pass the real user profile as `--user-data-dir`:
+
+```powershell
+# Windows: %APPDATA%\Code
+--user-data-dir="$env:APPDATA\Code"
+```
+
+Caveats:
+- The current user must not have a regular VS Code instance open against the
+  same profile (single-instance lock on the user-data-dir).
+- The session will read/write the user's real settings, keybindings, recent
+  projects, etc. — so commands like `Developer: Reload Window` mutate the
+  live profile. Acceptable for ad-hoc debugging, **not** for the e2e suite.
+
+### Option B — seed the first-run flags into a fresh profile (isolated, recommended for e2e)
+
+Copy the small set of state files that gate the first-run dialogs from a
+known-good profile into the new `--user-data-dir` before launch. A safe
+minimal set is:
+
+| File (relative to user-data-dir) | Purpose |
+| --- | --- |
+| `Local State` | Top-level install + telemetry-ack flags (e.g. `telemetryNoticeAcknowledged`). |
+| `User/globalStorage/state.vscdb` | Per-profile memento including the Copilot/chat setup markers (`chat.setupContext`, `config.chat.setupFromDialog`, `workbench.welcomePage.*`). |
+
+Concretely (PowerShell):
+
+```powershell
+$seed = "$env:APPDATA\Code"                # any already-configured profile
+$dst  = "C:\temp\user-data"                # the new profile for the EDH
+New-Item -ItemType Directory -Path $dst -Force | Out-Null
+Copy-Item -Path "$seed\Local State"                       -Destination "$dst\Local State"
+Copy-Item -Path "$seed\User\globalStorage\state.vscdb"    -Destination "$dst\User\globalStorage\state.vscdb"
+# extensions-dir stays in a temp dir so we don't drag the user's extensions in
+```
+
+The seeded `state.vscdb` will reference the seeded profile's id; if the new
+profile needs a stable id, copy `User/globalStorage/storage.json` as well so
+VS Code re-uses the same `__default__profile__` memento key.
+
+> Verified 2026-06-06 against VS Code 1.x: launching with
+> `--user-data-dir=$APPDATA\Code` produced `dialogs: []` and zero
+> AI-splash keyword matches in the workbench DOM (`hasEditor: true`,
+> chat panel showing the normal "Sign In" button, no modal).
+
+
 
 ## Repo Notes
 
-- For this repository, always prefer a fresh Extension Development Host started from the rebuilt workspace, with its own `--user-data-dir` and `--extensions-dir`, so CDP actions are not pointed at a stale renderer.
-- On Windows, launch VS Code through the `bin/code.cmd` CLI wrapper when possible; it is the more reliable path for extension-development-host sessions than calling `Code.exe` directly.
-- Before tree-view assertions, open the NodeMCU activity bar item and expand the panes; the sidebar can exist before the extension has actually populated its data.
-- `NodeMCU: Initialize Project` is the reliable activation point for workspace-scoped tests because it creates `nodemcu.ini`, seeds `init.lua`, and causes the views to refresh.
-- When testing upload and device explorer flows without real hardware, the harness can inject `NODEMCU_VSCODE_NODEMCU_TOOL` and `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` into the Extension Development Host process.
-- If a renderer looks stale, verify the target in `http://127.0.0.1:<port>/json` is the current `Extension Development Host`, then prefer `reload-window` or a new host over reusing an old one.
+- For this repository, always prefer a fresh Extension Development Host started
+  from the rebuilt workspace, with its own `--user-data-dir` and
+  `--extensions-dir`, so CDP actions are not pointed at a stale renderer.
+- On Windows, launch VS Code through the `bin/code.cmd` CLI wrapper when
+  possible; it is the more reliable path for extension-development-host sessions
+  than calling `Code.exe` directly.
+- Before tree-view assertions, open the NodeMCU activity bar item and expand
+  the panes; the sidebar can exist before the extension has actually populated
+  its data.
+- `NodeMCU: Initialize Project` is the reliable activation point for
+  workspace-scoped tests because it creates `nodemcu.ini`, seeds `init.lua`,
+  and causes the views to refresh.
+- When testing upload and device explorer flows without real hardware, the
+  harness can inject `NODEMCU_VSCODE_NODEMCU_TOOL` and
+  `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` into the Extension Development Host
+  process. See [AGENTS.md §7.4](../../../AGENTS.md#74-test-only-environment-variables)
+  for the full env-var contract.
+- If a renderer looks stale, verify the target in `http://127.0.0.1:<port>/json`
+  is the current `Extension Development Host`, then prefer `reload-window` or
+  a new host over reusing an old one.
 
 ## Command Index
 
