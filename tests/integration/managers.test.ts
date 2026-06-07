@@ -53,8 +53,8 @@ describe("BuildManager (integration, mocked shell)", () => {
       jobCount: 4,
       verbose: false,
       generator: "Ninja",
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(r.success).toBe(true);
     expect(shell.calls).toHaveLength(2);
@@ -78,8 +78,8 @@ describe("BuildManager (integration, mocked shell)", () => {
       jobCount: 4,
       verbose: false,
       generator: "Ninja",
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(r.success).toBe(true);
     expect(r.needsReconfigure).toBe(false);
@@ -102,8 +102,8 @@ describe("BuildManager (integration, mocked shell)", () => {
       jobCount: 4,
       verbose: false,
       generator: "Ninja",
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(r.success).toBe(false);
     expect(r.problems.length).toBeGreaterThan(0);
@@ -123,8 +123,8 @@ describe("BuildManager (integration, mocked shell)", () => {
       jobCount: 4,
       verbose: false,
       generator: "Ninja",
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     const header = fs.readFileSync(path.join(fwPath, "app", "include", "user_modules.h"), "utf-8");
     expect(header).toMatch(/^#define LUA_USE_MODULES_MQTT$/m);
@@ -150,8 +150,8 @@ describe("FlashManager (integration, mocked shell)", () => {
       firmwarePath: tmp,
       config: defaultConfig(),
       port: "/dev/ttyUSB0",
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(r.success).toBe(true);
     expect(shell.calls).toHaveLength(1);
@@ -171,8 +171,8 @@ describe("FlashManager (integration, mocked shell)", () => {
       firmwarePath: tmp,
       config: cfg,
       port: "/dev/ttyUSB0",
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(shell.calls[0].args).toContain("0x100000");
     expect(shell.calls[0].args).toContain("spiffs.bin");
@@ -199,10 +199,10 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0 });
     const t = new NodemcuTool(shell as unknown as Shell);
     const r = await t.upload(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: true },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: true },
       "/local/foo.lua",
       "foo.lua",
-      () => {},
+      () => { },
     );
     expect(r.success).toBe(true);
     expect(shell.calls[0].command).toBe("node");
@@ -218,10 +218,10 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0 });
     const t = new NodemcuTool(shell as unknown as Shell);
     const r = await t.download(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: false },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
       "init.lua",
       "/local/init.lua",
-      () => {},
+      () => { },
     );
     expect(r.success).toBe(true);
     expect(shell.calls[0].command).toBe("node");
@@ -234,9 +234,9 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0 });
     const t = new NodemcuTool(shell as unknown as Shell);
     const r = await t.remove(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: false },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
       "init.lua",
-      () => {},
+      () => { },
     );
     expect(r.success).toBe(true);
     expect(shell.calls[0].command).toBe("node");
@@ -248,8 +248,8 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({ files: [{ name: "init.lua", size: 234 }, { name: "foo.lua", size: 100 }] }) });
     const t = new NodemcuTool(shell as unknown as Shell);
     const files = await t.listFiles(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: false },
-      () => {},
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
+      () => { },
     );
     expect(shell.calls[0].command).toBe("node");
     expect(shell.calls[0].args).toContain("fsinfo");

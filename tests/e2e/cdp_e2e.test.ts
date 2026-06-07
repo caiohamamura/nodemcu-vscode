@@ -1,18 +1,26 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
+import * as child_process from "node:child_process";
 
-// We connect to the already running Extension Development Host on port 9222.
-const PORT = 9222;
+const PORT = process.env.NODEMCU_VSCODE_E2E_CDP_PORT || 9237;
 
 async function getDebuggerUrl() {
-  const res = await fetch(`http://127.0.0.1:${PORT}/json`);
-  const targets = await res.json() as any[];
-  const target = targets.find(t => t.title.includes("[Extension Development Host]") || t.title.includes("nodemcu-vscode"));
-  if (!target) {
-    throw new Error(`Could not find Extension Development Host in targets: ${JSON.stringify(targets)}`);
+  for (let i = 0; i < 60; i++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/json`);
+      if (res.ok) {
+        const targets = await res.json() as any[];
+        const target = targets.find(t => t.title.includes("[Extension Development Host]") || t.title.includes("nodemcu-vscode"));
+        if (target) return target.webSocketDebuggerUrl;
+      }
+    } catch {
+      // ignore and retry
+    }
+    await new Promise(r => setTimeout(r, 1000));
   }
-  return target.webSocketDebuggerUrl;
+  throw new Error("Could not connect to EDH debugger port");
 }
 
 class CDPClient {
@@ -77,22 +85,74 @@ class CDPClient {
 
 describe("E2E CDP: Extension Host Automation", () => {
   let client: CDPClient;
+  let codeProcess: child_process.ChildProcess;
   const workspaceRoot = path.resolve(__dirname, "../..");
+  const extensionPath = workspaceRoot;
+  
+  const WORKSPACE_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-workspace-sim");
+  const USER_DATA_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-user-data-sim");
+  const EXTENSIONS_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-extensions-sim");
 
   beforeAll(async () => {
+    fs.rmSync(WORKSPACE_DIR, { recursive: true, force: true });
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    
+    fs.rmSync(USER_DATA_DIR, { recursive: true, force: true });
+    fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+    
+    fs.rmSync(EXTENSIONS_DIR, { recursive: true, force: true });
+    fs.mkdirSync(EXTENSIONS_DIR, { recursive: true });
+
+    // Seed global storage with fake firmware
+    const stateDir = path.join(USER_DATA_DIR, "User", "globalStorage", "caiohamamura.nodemcu-vscode");
+    const firmwareDir = path.join(stateDir, "firmware");
+    fs.mkdirSync(firmwareDir, { recursive: true });
+
+    // Assuming we have some tests/fixtures/fake-firmware to seed
+    const fakeFirmwareSrc = path.join(workspaceRoot, "tests", "fixtures", "fake-firmware");
+    if (fs.existsSync(fakeFirmwareSrc)) {
+      const targetDir = path.join(firmwareDir, "mbedtls-2.28.10-beta"); // Must match MANAGED_FIRMWARE_TAG
+      fs.cpSync(fakeFirmwareSrc, targetDir, { recursive: true });
+      fs.writeFileSync(path.join(firmwareDir, ".nodemcu-vscode-managed-firmware.json"), JSON.stringify({ tag: "mbedtls-2.28.10-beta", extractedAt: new Date().toISOString() }));
+    }
+
+    const codeCmd = process.env.VSCODE_E2E_EXECUTABLE || path.join(process.env.LOCALAPPDATA || "", "Programs", "Microsoft VS Code", "bin", "code.cmd");
+    codeProcess = child_process.spawn(`"${codeCmd}"`, [
+      "--new-window",
+      "--disable-workspace-trust",
+      `--user-data-dir=${USER_DATA_DIR}`,
+      `--extensions-dir=${EXTENSIONS_DIR}`,
+      `--extensionDevelopmentPath=${extensionPath}`,
+      `--remote-debugging-port=${PORT}`,
+      WORKSPACE_DIR
+    ], { 
+      detached: false, 
+      shell: true,
+      env: {
+        ...process.env,
+        NODEMCU_VSCODE_NODEMCU_TOOL: path.join(workspaceRoot, "tests", "fixtures", "fake-nodemcu-tool.js"),
+        NODEMCU_VSCODE_FAKE_SERIAL_PORTS: JSON.stringify([{ path: "COM42", manufacturer: "Fake", vendorId: "1234", productId: "5678" }]),
+        NODEMCU_VSCODE_FAKE_NODMCU_TOOL_STATE: path.join(os.tmpdir(), "nodemcu-fake-state")
+      }
+    });
+
     try {
       const wsUrl = await getDebuggerUrl();
       client = new CDPClient(wsUrl);
       await client.connect();
     } catch (err: any) {
-      console.warn("CDP connection failed. E2E test requires Extension Development Host running with debug port 9222.");
+      console.warn("CDP connection failed. E2E test requires Extension Development Host running with debug port " + PORT);
+      if (codeProcess) codeProcess.kill();
       throw err;
     }
-  });
+  }, 60000);
 
   afterAll(() => {
     if (client) {
       client.close();
+    }
+    if (codeProcess) {
+      codeProcess.kill();
     }
   });
 

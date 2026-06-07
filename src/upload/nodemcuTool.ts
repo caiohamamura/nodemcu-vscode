@@ -8,6 +8,7 @@ export interface NodemcuToolOptions {
   baud: number;
   baudUpload: number;
   compile: boolean;
+  run?: boolean;
 }
 
 export interface FileEntry {
@@ -55,14 +56,23 @@ export class NodemcuTool {
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
+  private async runWithDelay(command: string, args: string[], options?: any): Promise<any> {
+    const r = await this.shell.run(command, args, options);
+    if (process.platform === "win32") {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    return r;
+  }
+
   async upload(opts: NodemcuToolOptions, localPath: string, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, [
       "upload",
       ...(opts.compile ? ["--compile"] : []),
+      ...(opts.run ? ["--run"] : []),
       "--remotename", remoteName,
       localPath,
     ]);
-    const r = await this.shell.run(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
@@ -70,7 +80,7 @@ export class NodemcuTool {
     const destinationDir = path.dirname(localPath);
     const downloadedPath = path.join(destinationDir, remoteName);
     const cmd = this.args(opts, ["download", remoteName]);
-    const r = await this.shell.run(cmd.command, cmd.args, { cwd: destinationDir, onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { cwd: destinationDir, onStdout: onLog, onStderr: onLog });
     if (r.exitCode === 0 && downloadedPath !== localPath && fs.existsSync(downloadedPath)) {
       fs.renameSync(downloadedPath, localPath);
     }
@@ -79,13 +89,31 @@ export class NodemcuTool {
 
   async remove(opts: NodemcuToolOptions, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, ["remove", remoteName]);
-    const r = await this.shell.run(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
+  }
+
+  async runFile(opts: NodemcuToolOptions, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const cmd = this.args(opts, ["run", remoteName]);
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
+  }
+
+  async reset(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const cmd = this.args(opts, ["reset"]);
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
+  }
+
+  async mkfs(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const cmd = this.args(opts, ["mkfs", "--noninteractive"]);
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async listFiles(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<FileEntry[]> {
     const cmd = this.args(opts, ["fsinfo", "--json"]);
-    const r = await this.shell.run(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
     if (r.exitCode !== 0) return [];
     try {
       const parsed = JSON.parse(r.stdout) as { files?: Array<{ name: string; size: number }> };

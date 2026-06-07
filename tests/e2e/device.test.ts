@@ -67,7 +67,7 @@ describe_("E2E DEVICE: real ESP8266 build, flash, verify, upload", () => {
     backupBin1 = path.join(BACKUP_DIR, "orig_0x10000.bin");
 
     cfg = parseIni(fs.readFileSync(TEST_INI, "utf-8"));
-    firmwarePath = resolveFirmwarePath(os.tmpdir(), cfg.nodemcu.firmware_path);
+    firmwarePath = resolveFirmwarePath(os.tmpdir(), cfg.nodemcu.firmware_path ?? "");
     buildDir = path.join(firmwarePath, "build");
     bin0 = path.join(firmwarePath, "bin", "0x00000.bin");
     bin1 = path.join(firmwarePath, "bin", "0x10000.bin");

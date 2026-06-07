@@ -11,7 +11,7 @@ import {
 describe("parseIni", () => {
   it("returns defaults on empty input", () => {
     const cfg = parseIni("");
-    expect(cfg.nodemcu.firmware_path).toBe("");
+    expect(cfg.nodemcu.firmware_path).toBeUndefined();
     expect(cfg.nodemcu.lua_version).toBe("53");
     expect(cfg.nodemcu.baud).toBe(115200);
   });
@@ -49,7 +49,7 @@ flash_freq = 999
     const cfg = parseIni(ini);
     expect(cfg.nodemcu.lua_version).toBe("53");
     expect(cfg.nodemcu.flash_mode).toBe("dio");
-    expect(cfg.nodemcu.flash_freq).toBe("40m");
+    expect(cfg.nodemcu.flash_freq).toBe("80m");
   });
 
   it("parses c_modules and lua_modules sections", () => {

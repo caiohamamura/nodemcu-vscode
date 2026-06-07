@@ -8,6 +8,7 @@ export interface CompileProblem {
 }
 
 const GCC_DIAG = /^(?:\s*)?(.+?):(\d+)(?::(\d+))?:\s*(error|warning|note):\s*(.+?)$/;
+const MSVC_DIAG = /^(.+?)\((\d+)\):\s*(fatal error|error|warning)\s+([A-Z0-9]+):\s*(.+)$/;
 const CMAKE_ERROR = /^CMake Error(?:\s+at\s+(.+?))?:\s*(.+)$/;
 
 export function parseProblems(output: string): CompileProblem[] {
@@ -22,6 +23,19 @@ export function parseProblems(output: string): CompileProblem[] {
         severity: m[4] as "error" | "warning" | "note",
         message: m[5].trim(),
         source: "gcc",
+      });
+      continue;
+    }
+    m = MSVC_DIAG.exec(line);
+    if (m) {
+      const isError = m[3].includes("error");
+      problems.push({
+        file: m[1].trim(),
+        line: Number(m[2]),
+        column: 0,
+        severity: isError ? "error" : "warning",
+        message: `[${m[4]}] ${m[5].trim()}`,
+        source: "msvc",
       });
       continue;
     }

@@ -35,8 +35,6 @@ let cachedFirmwarePath: string | null = null;
 let pendingFirmwarePromise: Promise<string | null> | null = null;
 let extensionContext: vscode.ExtensionContext;
 
-const LEGACY_DEFAULT_FIRMWARE_PATH = "../nodemcu-firmware";
-
 class AsyncTreeProvider implements vscode.TreeDataProvider<TreeItemNode> {
   private _onDidChange = new vscode.EventEmitter<TreeItemNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChange.event;
@@ -167,7 +165,7 @@ async function getFirmwarePath(): Promise<string | null> {
 
   const cfg = getConfigOrNull();
   const configuredSetting = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("firmwarePath");
-  const configuredIni = cfg?.nodemcu.firmware_path.trim() === LEGACY_DEFAULT_FIRMWARE_PATH ? "" : cfg?.nodemcu.firmware_path ?? "";
+  const configuredIni = cfg?.nodemcu.firmware_path ?? "";
   const configured = configuredSetting || configuredIni;
   if (configured.trim()) {
     const workspaceRoot = getWorkspaceRoot();
@@ -437,7 +435,12 @@ async function doInitProject(): Promise<void> {
   }
   saveConfig(iniPath, defaultConfig());
 
-  const initLuaPath = path.join(path.dirname(iniPath), "init.lua");
+  const srcDir = path.join(path.dirname(iniPath), "src");
+  if (!fs.existsSync(srcDir)) {
+    fs.mkdirSync(srcDir, { recursive: true });
+  }
+
+  const initLuaPath = path.join(srcDir, "init.lua");
   if (!fs.existsSync(initLuaPath)) {
     fs.writeFileSync(
       initLuaPath,
@@ -511,6 +514,9 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
 
   if (uri) {
     filesToUpload.push({ localPath: uri.fsPath, remoteName: path.basename(uri.fsPath) });
+  } else if (vscode.window.activeTextEditor) {
+    const editorUri = vscode.window.activeTextEditor.document.uri;
+    filesToUpload.push({ localPath: editorUri.fsPath, remoteName: path.basename(editorUri.fsPath) });
   } else {
     srcSetting = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("src") || cfg.nodemcu.src || "src";
     const srcDir = workspaceRoot ? path.resolve(workspaceRoot, srcSetting) : null;
@@ -538,6 +544,13 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
         if (!seen.has(file)) {
           seen.add(file);
           filesToUpload.push({ localPath: file, remoteName: path.basename(file) });
+        }
+      }
+      if (workspaceRoot) {
+        const initLuaPath = path.join(workspaceRoot, "init.lua");
+        if (fs.existsSync(initLuaPath) && !seen.has(initLuaPath)) {
+          seen.add(initLuaPath);
+          filesToUpload.push({ localPath: initLuaPath, remoteName: "init.lua" });
         }
       }
     } else {
@@ -587,6 +600,8 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
   let successCount = 0;
   let failCount = 0;
 
+  // Removed tool.reset() here to prevent Windows COM port locking. nodemcu-tool already resets on connect.
+
   setStatus("uploading", `Uploading ${changedFiles.length} file(s)...`);
 
   const uploadTimestamps = extensionContext
@@ -596,12 +611,20 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
   for (const file of changedFiles) {
     if (!fs.existsSync(file.localPath)) continue;
     outputChannel.appendLine(`Uploading ${file.localPath} as ${file.remoteName}...`);
-    const r = await tool.upload(
-      { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
-      file.localPath,
-      file.remoteName,
-      (s) => outputChannel.append(s),
-    );
+    const opts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false };
+    let r = await tool.upload(opts, file.localPath, file.remoteName, (s) => outputChannel.append(s));
+    
+    if (!r.success && r.error && (r.error.includes("unable to open file") || r.error.includes("index global 'file'"))) {
+      outputChannel.appendLine(`\nDevice filesystem may be unformatted. Formatting automatically...`);
+      const mkfsRes = await tool.mkfs(opts, (s) => outputChannel.append(s));
+      if (mkfsRes.success) {
+        outputChannel.appendLine(`\nFormat successful. Retrying upload...`);
+        r = await tool.upload(opts, file.localPath, file.remoteName, (s) => outputChannel.append(s));
+      } else {
+        outputChannel.appendLine(`\nFormat failed: ${mkfsRes.error}`);
+      }
+    }
+
     if (r.success) {
       successCount++;
       const mtime = fs.statSync(file.localPath).mtimeMs;
@@ -637,6 +660,11 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
         }
       }
     }
+  }
+
+  if (successCount > 0) {
+    setStatus("uploading", `Resetting device to apply changes...`);
+    await tool.reset({ python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false }, (s) => outputChannel.append(s));
   }
 
   if (failCount > 0) {
@@ -698,6 +726,13 @@ async function doUploadChanges(): Promise<void> {
       filesToUpload.push({ localPath: file, remoteName: path.basename(file) });
     }
   }
+  if (workspaceRoot) {
+    const initLuaPath = path.join(workspaceRoot, "init.lua");
+    if (fs.existsSync(initLuaPath) && !seen.has(initLuaPath)) {
+      seen.add(initLuaPath);
+      filesToUpload.push({ localPath: initLuaPath, remoteName: "init.lua" });
+    }
+  }
 
   const uploadTimestamps = extensionContext
     ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
@@ -727,17 +762,27 @@ async function doUploadChanges(): Promise<void> {
   let successCount = 0;
   let failCount = 0;
 
+  // Removed tool.reset() here to prevent Windows COM port locking.
+
   setStatus("uploading", `Uploading ${changedFiles.length} file(s)...`);
 
   for (const file of changedFiles) {
     if (!fs.existsSync(file.localPath)) continue;
     outputChannel.appendLine(`Uploading ${file.localPath} as ${file.remoteName}...`);
-    const r = await tool.upload(
-      { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
-      file.localPath,
-      file.remoteName,
-      (s) => outputChannel.append(s),
-    );
+    const opts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false };
+    let r = await tool.upload(opts, file.localPath, file.remoteName, (s) => outputChannel.append(s));
+    
+    if (!r.success && r.error && (r.error.includes("unable to open file") || r.error.includes("index global 'file'"))) {
+      outputChannel.appendLine(`\nDevice filesystem may be unformatted. Formatting automatically...`);
+      const mkfsRes = await tool.mkfs(opts, (s) => outputChannel.append(s));
+      if (mkfsRes.success) {
+        outputChannel.appendLine(`\nFormat successful. Retrying upload...`);
+        r = await tool.upload(opts, file.localPath, file.remoteName, (s) => outputChannel.append(s));
+      } else {
+        outputChannel.appendLine(`\nFormat failed: ${mkfsRes.error}`);
+      }
+    }
+
     if (r.success) {
       successCount++;
       const mtime = fs.statSync(file.localPath).mtimeMs;
@@ -750,6 +795,11 @@ async function doUploadChanges(): Promise<void> {
 
   if (extensionContext) {
     await extensionContext.workspaceState.update("nodemcu.uploadTimestamps", uploadTimestamps);
+  }
+
+  if (successCount > 0) {
+    setStatus("uploading", `Resetting device to apply changes...`);
+    await tool.reset({ python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false }, (s) => outputChannel.append(s));
   }
 
   if (failCount > 0) {
@@ -820,6 +870,63 @@ async function doDeleteFile(item?: { remoteFile?: FileEntry }): Promise<void> {
   } else {
     setStatus("error", "delete FAILED");
     vscode.window.showErrorMessage(`Delete failed: ${r.error}`);
+  }
+}
+
+async function doRunFile(item?: { remoteFile?: FileEntry; module?: LuaModuleInfo }): Promise<void> {
+  const cfg = getConfigOrNull();
+  if (!cfg) return;
+  const port = await ensurePort(cfg);
+  if (!port) return;
+  let remoteName = item?.remoteFile?.name;
+  if (!remoteName) {
+    const fw = await getFirmwarePath();
+    if (!fw) return;
+    const modules = await listLuaModulesFromFirmware(fw);
+    const pick = await vscode.window.showQuickPick(
+      modules.map((m) => ({ label: m.name, description: m.description, module: m })),
+      { placeHolder: "Select a Lua file to run" }
+    );
+    if (!pick) return;
+    remoteName = pick.module.name + ".lua";
+  }
+  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const tool = new NodemcuTool(new Shell());
+  if (!(await tool.isInstalled(python)) && !(await ensureNodemcuTool(python))) return;
+  setStatus("uploading", `running ${remoteName}...`);
+  const r = await tool.runFile(
+    { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
+    remoteName,
+    (s) => outputChannel.append(s),
+  );
+  if (r.success) {
+    setStatus("success", `ran ${remoteName}`);
+    vscode.window.showInformationMessage(`Ran ${remoteName}`);
+  } else {
+    setStatus("error", "run FAILED");
+    vscode.window.showErrorMessage(`Failed to run ${remoteName}: ${r.error}`);
+  }
+}
+
+async function doResetDevice(): Promise<void> {
+  const cfg = getConfigOrNull();
+  if (!cfg) return;
+  const port = await ensurePort(cfg);
+  if (!port) return;
+  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const tool = new NodemcuTool(new Shell());
+  if (!(await tool.isInstalled(python)) && !(await ensureNodemcuTool(python))) return;
+  setStatus("uploading", `resetting device...`);
+  const r = await tool.reset(
+    { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
+    (s) => outputChannel.append(s),
+  );
+  if (r.success) {
+    setStatus("success", `reset device`);
+    vscode.window.showInformationMessage(`Reset device successfully.`);
+  } else {
+    setStatus("error", "reset FAILED");
+    vscode.window.showErrorMessage(`Failed to reset device: ${r.error}`);
   }
 }
 
@@ -975,11 +1082,10 @@ async function doOpenSerialMonitor(): Promise<void> {
   if (!cfg) return;
   const port = await ensurePort(cfg);
   if (!port) return;
-  const term = vscode.window.createTerminal({ name: `NodeMCU: ${port}`, shellPath: "python" });
+  const term = vscode.window.createTerminal({ name: `NodeMCU: ${port}` });
   term.show();
   const baud = cfg.nodemcu.baud;
-  const args = ["-c", `import serial, sys; s=serial.Serial('${port}', ${baud}); [sys.stdout.write(l.decode(errors='ignore')) for l in iter(s.readline, b'')]`];
-  term.sendText(`python ${args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`);
+  term.sendText(`python -m serial.tools.miniterm "${port}" ${baud}`);
 }
 
 function buildDeviceExplorerProvider(): AsyncTreeProvider {
@@ -1324,6 +1430,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.uploadChanges", doUploadChanges),
     vscode.commands.registerCommand("nodemcu-vscode.downloadFile", doDownloadFile),
     vscode.commands.registerCommand("nodemcu-vscode.deleteFile", doDeleteFile),
+    vscode.commands.registerCommand("nodemcu-vscode.runFile", doRunFile),
+    vscode.commands.registerCommand("nodemcu-vscode.resetDevice", doResetDevice),
     vscode.commands.registerCommand("nodemcu-vscode.syncLuaModules", doSyncLuaModules),
     vscode.commands.registerCommand("nodemcu-vscode.regenerateLuaApi", doRegenerateLuaApi),
     vscode.commands.registerCommand("nodemcu-vscode.addLuaModule", doAddLuaModule),

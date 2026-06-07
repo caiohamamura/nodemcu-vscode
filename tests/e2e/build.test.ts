@@ -108,8 +108,8 @@ e2eDescribe("E2E: real build against the nodemcu-firmware repo", () => {
       jobCount: Math.min(os.cpus().length, 4),
       verbose: false,
       generator: toolchain.generator,
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(result.success).toBe(true);
     expect(result.needsReconfigure).toBe(false);
@@ -130,8 +130,8 @@ e2eDescribe("E2E: real build against the nodemcu-firmware repo", () => {
       jobCount: Math.min(os.cpus().length, 4),
       verbose: false,
       generator: toolchain.generator,
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(result.success, `build failed: ${result.summary}`).toBe(true);
 
@@ -147,8 +147,8 @@ e2eDescribe("E2E: real build against the nodemcu-firmware repo", () => {
       jobCount: Math.min(os.cpus().length, 4),
       verbose: false,
       generator: toolchain.generator,
-      onLog: () => {},
-      onStderr: () => {},
+      onLog: () => { },
+      onStderr: () => { },
     });
     expect(result2.success, `incremental build with new module failed: ${result2.summary}`).toBe(true);
     expect(result2.modulesChanged.added).toContain("coap");
@@ -171,8 +171,8 @@ describe("E2E: flash command construction", () => {
       port: "/dev/ttyUSB0",
       baud: 115200,
       flashMode: "dio",
-      flashFreq: "40m",
-      flashSize: "1M",
+      flashFreq: "80m",
+      flashSize: "4MB",
       bin0: path.join(FIRMWARE_REPO, "bin", "0x00000.bin"),
       bin1: path.join(FIRMWARE_REPO, "bin", "0x10000.bin"),
       extraFiles: [],

@@ -25,6 +25,11 @@
   "main": "dist/extension.js",
   "activationEvents": [
     "workspaceContains:nodemcu.ini",
+    "onStartupFinished",
+    "onView:nodemcu.deviceExplorer",
+    "onView:nodemcu.projectTasks",
+    "onView:nodemcu.luaModules",
+    "onView:nodemcu.cModules",
     "onCommand:nodemcu-vscode.initProject",
     "onCommand:nodemcu-vscode.build",
     "onCommand:nodemcu-vscode.flash",
@@ -33,13 +38,16 @@
     "onCommand:nodemcu-vscode.uploadChanges",
     "onCommand:nodemcu-vscode.downloadFile",
     "onCommand:nodemcu-vscode.deleteFile",
+    "onCommand:nodemcu-vscode.runFile",
+    "onCommand:nodemcu-vscode.resetDevice",
     "onCommand:nodemcu-vscode.refreshExplorer",
     "onCommand:nodemcu-vscode.syncLuaModules",
     "onCommand:nodemcu-vscode.addLuaModule",
     "onCommand:nodemcu-vscode.toggleCModule",
     "onCommand:nodemcu-vscode.regenerateLuaApi",
     "onCommand:nodemcu-vscode.openIni",
-    "onCommand:nodemcu-vscode.openSerialMonitor"
+    "onCommand:nodemcu-vscode.openSerialMonitor",
+    "onCommand:nodemcu-vscode.selectPort"
   ],
   "contributes": {
     "viewsContainers": {
@@ -75,22 +83,98 @@
       ]
     },
     "commands": [
-      { "command": "nodemcu-vscode.initProject", "title": "NodeMCU: Initialize Project", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.build", "title": "NodeMCU: Build Firmware", "category": "NodeMCU", "key": "ctrl+shift+b" },
-      { "command": "nodemcu-vscode.flash", "title": "NodeMCU: Flash Firmware", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.buildAndFlash", "title": "NodeMCU: Build & Flash", "category": "NodeMCU", "key": "ctrl+alt+b" },
-      { "command": "nodemcu-vscode.uploadFile", "title": "NodeMCU: Upload File to Device", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.uploadChanges", "title": "NodeMCU: Upload Changes to Device", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.downloadFile", "title": "NodeMCU: Download File from Device", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.deleteFile", "title": "NodeMCU: Delete File on Device", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.refreshExplorer", "title": "NodeMCU: Refresh Device Explorer", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.syncLuaModules", "title": "NodeMCU: Sync Lua Modules to Device", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.addLuaModule", "title": "NodeMCU: Add Lua Module from Library", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.toggleCModule", "title": "NodeMCU: Toggle C Module", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.regenerateLuaApi", "title": "NodeMCU: Regenerate Lua API Stubs", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.openIni", "title": "NodeMCU: Open nodemcu.ini", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.openSerialMonitor", "title": "NodeMCU: Open Serial Monitor", "category": "NodeMCU" },
-      { "command": "nodemcu-vscode.selectPort", "title": "NodeMCU: Select Port", "category": "NodeMCU" }
+      {
+        "command": "nodemcu-vscode.initProject",
+        "title": "Initialize Project",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.build",
+        "title": "Build Firmware",
+        "category": "NodeMCU",
+        "key": "ctrl+shift+b"
+      },
+      {
+        "command": "nodemcu-vscode.flash",
+        "title": "Flash Firmware",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.buildAndFlash",
+        "title": "Build & Flash",
+        "category": "NodeMCU",
+        "key": "ctrl+alt+b"
+      },
+      {
+        "command": "nodemcu-vscode.uploadFile",
+        "title": "Upload File to Device",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.uploadChanges",
+        "title": "Upload Changes to Device",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.downloadFile",
+        "title": "Download File from Device",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.deleteFile",
+        "title": "Delete File on Device",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.runFile",
+        "title": "Run File on Device",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.resetDevice",
+        "title": "Reset Device",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.refreshExplorer",
+        "title": "Refresh Device Explorer",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.syncLuaModules",
+        "title": "Sync Lua Modules to Device",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.addLuaModule",
+        "title": "Add Lua Module from Library",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.toggleCModule",
+        "title": "Toggle C Module",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.regenerateLuaApi",
+        "title": "Regenerate Lua API Stubs",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.openIni",
+        "title": "Open nodemcu.ini",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.openSerialMonitor",
+        "title": "Open Serial Monitor",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.selectPort",
+        "title": "Select Port",
+        "category": "NodeMCU"
+      }
     ],
     "menus": {
       "view/item/context": [
@@ -115,6 +199,11 @@
           "group": "nodemcu"
         },
         {
+          "command": "nodemcu-vscode.runFile",
+          "when": "view == nodemcu.deviceExplorer && viewItem == nodemcu.deviceFile",
+          "group": "nodemcu"
+        },
+        {
           "command": "nodemcu-vscode.refreshExplorer",
           "when": "view == nodemcu.deviceExplorer",
           "group": "nodemcu"
@@ -128,11 +217,6 @@
           "type": "string",
           "default": "src",
           "description": "Directory containing scripts to monitor and upload automatically."
-        },
-        "nodemcu-vscode.firmwarePath": {
-          "type": "string",
-          "default": "../nodemcu-firmware",
-          "description": "Path to the cloned nodemcu-firmware repository, relative to the workspace root or absolute."
         },
         "nodemcu-vscode.port": {
           "type": "string",
@@ -181,15 +265,19 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@types/extract-zip": "^2.0.0",
+    "extract-zip": "^2.0.1",
     "ini": "^5.0.0",
+    "nodemcu-tool": "^3.2.1",
     "serialport": "^12.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/serialport": "^8.0.0",
     "@types/vscode": "^1.85.0",
-    "esbuild": "^0.21.0",
+    "esbuild": "^0.28.0",
     "typescript": "^5.4.0",
-    "vitest": "^1.6.0"
-  }
+    "vitest": "^4.1.8"
+  },
+  "repository": "https://github.com/caiohamamura/nodemcu-vscode"
 }

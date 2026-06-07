@@ -52,13 +52,12 @@ The plugin reads `nodemcu.ini` (format inspired by `platformio.ini`).
 
 ```ini
 [nodemcu]
-firmware_path =
 lua_version = 53
 port = /dev/ttyUSB0
 baud = 115200
 flash_mode = dio
-flash_freq = 40m
-flash_size = 1M
+flash_freq = 80m
+flash_size = 4MB
 
 [c_modules]
 adc = true

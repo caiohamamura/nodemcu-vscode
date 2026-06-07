@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import extract from "extract-zip";
 
-export const MANAGED_FIRMWARE_TAG = "mbedtls-2.28.10-beta";
+export const MANAGED_FIRMWARE_TAG = "luac_cross_optional";
 export const MANAGED_FIRMWARE_URL = `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/${MANAGED_FIRMWARE_TAG}.zip`;
 
 const MARKER_FILE = ".nodemcu-vscode-managed-firmware.json";
@@ -199,10 +199,19 @@ void luaL_assertfail(const char *file, int line, const char *message)
   const luacCmakePath = path.join(firmwareRoot, "tools", "luac_cross", "CMakeLists.txt");
   const luacCmake = await fsp.readFile(luacCmakePath, "utf-8");
   const sourceNeedle = "${APP_DIR}/modules/pixbuf.c";
-  const sourceReplacement = `${sourceNeedle}
-    nodemcu-vscode-luac-assert.c`;
+  const sourceReplacement = `${sourceNeedle}\n    nodemcu-vscode-luac-assert.c`;
   if (!luacCmake.includes("nodemcu-vscode-luac-assert.c")) {
     await fsp.writeFile(luacCmakePath, luacCmake.replace(sourceNeedle, sourceReplacement), "utf-8");
+  }
+
+  const rootCmakePath = path.join(firmwareRoot, "CMakeLists.txt");
+  if (fs.existsSync(rootCmakePath)) {
+    const rootCmake = await fsp.readFile(rootCmakePath, "utf-8");
+    const epNeedle = "ExternalProject_Add(firmware";
+    const epReplacement = "ExternalProject_Add(firmware\n    BUILD_BYPRODUCTS ${CURRENT_BINARY_DIR}/app.elf";
+    if (!rootCmake.includes("BUILD_BYPRODUCTS")) {
+      await fsp.writeFile(rootCmakePath, rootCmake.replace(epNeedle, epReplacement), "utf-8");
+    }
   }
 }
 

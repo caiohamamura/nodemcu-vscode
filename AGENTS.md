@@ -249,7 +249,7 @@ lua_number_integral = false      # mutually exclusive with lua_number_64bits
 lua_number_64bits = false
 port =                           # e.g. /dev/ttyUSB0, COM3
 baud = 115200
-upload_baud = 115200
+upload_baud = 460800
 flash_mode = dio                 # dio|qio|dout|qout
 flash_freq = 40m                 # 40m|26m|20m|80m
 flash_size = 1M                  # 1M|4M|512K|... or "detect"/"keep"
@@ -281,7 +281,7 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
 
 ### 5.3 Managed firmware
 
-- URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/mbedtls-2.28.10-beta.zip`
+- URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/luac_cross_optional.zip`
 - Tag: `mbedtls-2.28.10-beta` (constant in `src/firmware/managedFirmware.ts`).
 - Storage: `context.globalStorageUri/fsPath/firmware/<tag>/`.
 - Marker file: `.nodemcu-vscode-managed-firmware.json` (presence + validity of
