@@ -256,7 +256,8 @@ Actions:
           (() => {
             const input = document.querySelector('.quick-input-box input');
             input.focus();
-            input.value = "${commandText}";
+            const val = "${commandText}";
+            input.value = val.startsWith('>') ? val : '>' + val;
             input.dispatchEvent(new Event('input', { bubbles: true }));
           })()
         `);
@@ -286,7 +287,7 @@ Actions:
           (() => {
             const input = document.querySelector('.quick-input-box input');
             input.focus();
-            input.value = "Developer: Reload Window";
+            input.value = ">Developer: Reload Window";
             input.dispatchEvent(new Event('input', { bubbles: true }));
           })()
         `);

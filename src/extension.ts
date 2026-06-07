@@ -13,7 +13,7 @@ import {
 } from "./config/nodemcuIni";
 import { ConfigWatcher } from "./config/configWatcher";
 import { resolveFirmwarePath, luaModulesDir, userModulesHeader } from "./util/paths";
-import { isCModulesConfigChanged } from "./build/userModulesWriter";
+import { isCModulesConfigChanged, writeUserModulesHeader } from "./build/userModulesWriter";
 import { BuildManager } from "./build/buildManager";
 import { ToolchainLocator } from "./build/toolchain";
 import { FlashManager } from "./flash/flashManager";
@@ -648,6 +648,119 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
   }
 }
 
+async function doUploadChanges(): Promise<void> {
+  const cfg = getConfigOrNull();
+  if (!cfg) return;
+
+  const workspaceRoot = getWorkspaceRoot();
+  const fw = await getFirmwarePath();
+
+  if (fw) {
+    const headerPath = userModulesHeader(fw);
+    if (isCModulesConfigChanged(headerPath, cfg)) {
+      outputChannel.appendLine("C modules configuration has changed. Rebuilding and flashing firmware first...");
+      await doBuildAndFlash();
+      if (statusEmitter.getState() !== "success") {
+        vscode.window.showErrorMessage("Build and flash failed. Upload aborted.");
+        return;
+      }
+    }
+  }
+
+  const srcSetting = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("src") || cfg.nodemcu.src || "src";
+  const srcDir = workspaceRoot ? path.resolve(workspaceRoot, srcSetting) : null;
+
+  if (!srcDir || !fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
+    vscode.window.showWarningMessage(`Source directory '${srcSetting}' does not exist or is not a directory.`);
+    return;
+  }
+
+  const srcFiles = getFilesRecursively(srcDir);
+  let localModules: ResolvedLuaModule[] = [];
+  if (fw && workspaceRoot) {
+    const resolved = await resolveAllLuaModules(workspaceRoot, fw, cfg);
+    localModules = resolved.filter((m) => !m.isRemote && m.exists);
+  }
+
+  const filesToUpload: { localPath: string; remoteName: string }[] = [];
+  const seen = new Set<string>();
+  for (const file of srcFiles) {
+    if (!seen.has(file)) {
+      seen.add(file);
+      const rel = path.relative(srcDir, file).replace(/\\/g, "/");
+      filesToUpload.push({ localPath: file, remoteName: rel });
+    }
+  }
+  for (const m of localModules) {
+    const file = m.resolvedLocalPath!;
+    if (!seen.has(file)) {
+      seen.add(file);
+      filesToUpload.push({ localPath: file, remoteName: path.basename(file) });
+    }
+  }
+
+  const uploadTimestamps = extensionContext
+    ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
+    : {};
+
+  const changedFiles = filesToUpload.filter((f) => {
+    if (!fs.existsSync(f.localPath)) return false;
+    const mtime = fs.statSync(f.localPath).mtimeMs;
+    const lastMtime = uploadTimestamps[f.localPath] ?? 0;
+    return mtime > lastMtime;
+  });
+
+  if (changedFiles.length === 0) {
+    outputChannel.appendLine("All files are up to date.");
+    return;
+  }
+
+  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const tool = new NodemcuTool(new Shell());
+  if (!(await tool.isInstalled(python))) {
+    const ok = await ensureNodemcuTool(python);
+    if (!ok) return;
+  }
+  const port = await ensurePort(cfg);
+  if (!port) return;
+
+  let successCount = 0;
+  let failCount = 0;
+
+  setStatus("uploading", `Uploading ${changedFiles.length} file(s)...`);
+
+  for (const file of changedFiles) {
+    if (!fs.existsSync(file.localPath)) continue;
+    outputChannel.appendLine(`Uploading ${file.localPath} as ${file.remoteName}...`);
+    const r = await tool.upload(
+      { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
+      file.localPath,
+      file.remoteName,
+      (s) => outputChannel.append(s),
+    );
+    if (r.success) {
+      successCount++;
+      const mtime = fs.statSync(file.localPath).mtimeMs;
+      uploadTimestamps[file.localPath] = mtime;
+    } else {
+      failCount++;
+      outputChannel.appendLine(`Failed to upload ${file.remoteName}: ${r.error}`);
+    }
+  }
+
+  if (extensionContext) {
+    await extensionContext.workspaceState.update("nodemcu.uploadTimestamps", uploadTimestamps);
+  }
+
+  if (failCount > 0) {
+    setStatus("error", `upload FAILED (${failCount} errors)`);
+    vscode.window.showErrorMessage(`Uploaded ${successCount} files, ${failCount} failed.`);
+  } else {
+    setStatus("success", `uploaded ${successCount} files`);
+    vscode.window.showInformationMessage(`Successfully uploaded ${successCount} file(s).`);
+  }
+}
+
 async function doDownloadFile(item?: { remoteFile?: FileEntry }): Promise<void> {
   const cfg = getConfigOrNull();
   if (!cfg) return;
@@ -841,6 +954,7 @@ async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
   if (iniPath) {
     cachedConfig = newCfg;
     saveConfig(iniPath, newCfg);
+    writeUserModulesHeader(userModulesHeader(fw), newCfg);
     refreshAll();
   }
 }
@@ -1103,6 +1217,13 @@ function buildProjectTasksProvider(): AsyncTreeProvider {
       command: { command: "nodemcu-vscode.uploadFile", title: "Upload" },
     },
     {
+      id: "task-upload-changes",
+      label: "Upload Changes",
+      collapsibleState: vscode.TreeItemCollapsibleState.None,
+      iconPath: new vscode.ThemeIcon("cloud-upload"),
+      command: { command: "nodemcu-vscode.uploadChanges", title: "Upload Changes" },
+    },
+    {
       id: "task-sync-lua",
       label: "Sync Lua Modules",
       collapsibleState: vscode.TreeItemCollapsibleState.None,
@@ -1200,6 +1321,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.flash", doFlash),
     vscode.commands.registerCommand("nodemcu-vscode.buildAndFlash", doBuildAndFlash),
     vscode.commands.registerCommand("nodemcu-vscode.uploadFile", doUploadFile),
+    vscode.commands.registerCommand("nodemcu-vscode.uploadChanges", doUploadChanges),
     vscode.commands.registerCommand("nodemcu-vscode.downloadFile", doDownloadFile),
     vscode.commands.registerCommand("nodemcu-vscode.deleteFile", doDeleteFile),
     vscode.commands.registerCommand("nodemcu-vscode.syncLuaModules", doSyncLuaModules),
@@ -1212,6 +1334,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", doOpenSerialMonitor),
     vscode.commands.registerCommand("nodemcu-vscode.selectPort", doSelectPort),
   );
+
 }
 
 export function deactivate(): void {

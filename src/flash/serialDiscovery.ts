@@ -11,6 +11,15 @@ export class SerialDiscovery {
   constructor(private shell: Shell) {}
 
   async list(): Promise<SerialPort[]> {
+    const fakePorts = process.env.NODEMCU_VSCODE_FAKE_SERIAL_PORTS;
+    if (fakePorts) {
+      try {
+        const parsed = JSON.parse(fakePorts) as Array<string | SerialPort>;
+        return parsed.map((entry) => typeof entry === "string" ? { path: entry } : { ...entry, path: entry.path });
+      } catch (error) {
+        console.warn("Failed to parse NODEMCU_VSCODE_FAKE_SERIAL_PORTS", error);
+      }
+    }
     try {
       // Use dynamic import to prevent activation failure if serialport is somehow broken
       const serialport = await import("serialport");

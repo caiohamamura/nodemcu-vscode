@@ -12,6 +12,15 @@ This skill allows an agent to connect to a running Extension Development Host or
 - The Extension Development Host (or target IDE window) must be launched with the `--remote-debugging-port=9222` flag.
 - Node.js version 22+ (so `fetch` and global `WebSocket` are natively available).
 
+## Repo Notes
+
+- For this repository, always prefer a fresh Extension Development Host started from the rebuilt workspace, with its own `--user-data-dir` and `--extensions-dir`, so CDP actions are not pointed at a stale renderer.
+- On Windows, launch VS Code through the `bin/code.cmd` CLI wrapper when possible; it is the more reliable path for extension-development-host sessions than calling `Code.exe` directly.
+- Before tree-view assertions, open the NodeMCU activity bar item and expand the panes; the sidebar can exist before the extension has actually populated its data.
+- `NodeMCU: Initialize Project` is the reliable activation point for workspace-scoped tests because it creates `nodemcu.ini`, seeds `init.lua`, and causes the views to refresh.
+- When testing upload and device explorer flows without real hardware, the harness can inject `NODEMCU_VSCODE_NODEMCU_TOOL` and `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` into the Extension Development Host process.
+- If a renderer looks stale, verify the target in `http://127.0.0.1:<port>/json` is the current `Extension Development Host`, then prefer `reload-window` or a new host over reusing an old one.
+
 ## Command Index
 
 Use the bundled script at [.claude/SKILLS/devtools-automation/scripts/cdp-control.js](file:///c:/Users/caioh/src/vscode/nodemcu-vscode/.claude/SKILLS/devtools-automation/scripts/cdp-control.js) to execute the following automation tasks:

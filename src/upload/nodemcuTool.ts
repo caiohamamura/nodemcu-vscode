@@ -19,6 +19,10 @@ export class NodemcuTool {
   constructor(private shell: Shell) {}
 
   private command(): { command: string; argsPrefix: string[] } {
+    const override = process.env.NODEMCU_VSCODE_NODEMCU_TOOL;
+    if (override && fs.existsSync(override)) {
+      return { command: "node", argsPrefix: [override] };
+    }
     const localScript = path.resolve(__dirname, "..", "node_modules", "nodemcu-tool", "bin", "nodemcu-tool.js");
     const sourceTreeScript = path.resolve(__dirname, "..", "..", "node_modules", "nodemcu-tool", "bin", "nodemcu-tool.js");
     const script = fs.existsSync(localScript) ? localScript : sourceTreeScript;

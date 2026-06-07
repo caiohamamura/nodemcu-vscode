@@ -38,7 +38,13 @@ export interface EnsureManagedFirmwareOptions {
 export async function ensureManagedFirmware(opts: EnsureManagedFirmwareOptions): Promise<string> {
   const root = path.join(opts.storageRoot, "firmware", MANAGED_FIRMWARE_TAG);
   const markerPath = path.join(root, MARKER_FILE);
-  if (isValidFirmwareRoot(root) && fs.existsSync(markerPath)) return root;
+  if (isManagedFirmwareReady(root)) return root;
+  if (isUsableExtractedFirmwareRoot(root)) {
+    opts.onProgress?.("Finalizing managed firmware");
+    await applyCompatibilityPatches(root);
+    await writeMarker(markerPath);
+    return root;
+  }
 
   opts.onProgress?.("Preparing firmware storage");
   await fsp.mkdir(path.dirname(root), { recursive: true });
@@ -70,17 +76,26 @@ export async function ensureManagedFirmware(opts: EnsureManagedFirmwareOptions):
     await hydrateSubmodules(root, tempRoot, opts.onProgress);
     await applyCompatibilityPatches(root);
 
-    await fsp.writeFile(markerPath, JSON.stringify({ tag: MANAGED_FIRMWARE_TAG, url: MANAGED_FIRMWARE_URL }, null, 2), "utf-8");
+    await writeMarker(markerPath);
     return root;
   } finally {
     await fsp.rm(tempRoot, { recursive: true, force: true });
   }
 }
 
-function isValidFirmwareRoot(dir: string): boolean {
-  return isBaseFirmwareRoot(dir)
+async function writeMarker(markerPath: string): Promise<void> {
+  await fsp.writeFile(markerPath, JSON.stringify({ tag: MANAGED_FIRMWARE_TAG, url: MANAGED_FIRMWARE_URL }, null, 2), "utf-8");
+}
+
+function isManagedFirmwareReady(dir: string): boolean {
+  return isUsableExtractedFirmwareRoot(dir)
     && fs.existsSync(path.join(dir, NEWLIB_COMPAT_SOURCE))
     && fs.existsSync(path.join(dir, LUAC_ASSERT_COMPAT_SOURCE))
+    && fs.existsSync(path.join(dir, MARKER_FILE));
+}
+
+function isUsableExtractedFirmwareRoot(dir: string): boolean {
+  return isBaseFirmwareRoot(dir)
     && SUBMODULES.every((submodule) => fs.existsSync(path.join(dir, submodule.path, submodule.requiredFile)));
 }
 

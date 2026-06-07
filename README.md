@@ -16,11 +16,12 @@ A VSCode extension for cross-platform NodeMCU/ESP8266 Lua firmware development.
 
 ## Quick start
 
-1. Install the **Lua** extension (`sumneko.lua`) — required for language server support.
-2. Open your project folder in VSCode.
-3. Run **NodeMCU: Initialize Project** from the command palette.
-4. Edit `nodemcu.ini` — set `port` if needed and toggle `[c_modules]`.
-5. Run **NodeMCU: Build & Flash** (`Ctrl+Alt+B`). The extension downloads and reuses its managed firmware copy automatically.
+1. Open your project folder in VSCode.
+2. Run **NodeMCU: Initialize Project** from the command palette.
+3. Edit `nodemcu.ini` — set `port` if needed and toggle `[c_modules]`.
+4. Run **NodeMCU: Build & Flash** (`Ctrl+Alt+B`). The extension downloads and reuses its managed firmware copy automatically.
+
+The Lua language extension (`sumneko.lua`) is included in this extension's pack dependencies so IntelliSense can use the generated stubs.
 
 ## Configuration
 

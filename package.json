@@ -8,7 +8,7 @@
     "vscode": "^1.85.0",
     "node": ">=18"
   },
-  "extensionDependencies": [
+  "extensionPack": [
     "sumneko.lua"
   ],
   "categories": [
@@ -30,6 +30,7 @@
     "onCommand:nodemcu-vscode.flash",
     "onCommand:nodemcu-vscode.buildAndFlash",
     "onCommand:nodemcu-vscode.uploadFile",
+    "onCommand:nodemcu-vscode.uploadChanges",
     "onCommand:nodemcu-vscode.downloadFile",
     "onCommand:nodemcu-vscode.deleteFile",
     "onCommand:nodemcu-vscode.refreshExplorer",
@@ -79,6 +80,7 @@
       { "command": "nodemcu-vscode.flash", "title": "NodeMCU: Flash Firmware", "category": "NodeMCU" },
       { "command": "nodemcu-vscode.buildAndFlash", "title": "NodeMCU: Build & Flash", "category": "NodeMCU", "key": "ctrl+alt+b" },
       { "command": "nodemcu-vscode.uploadFile", "title": "NodeMCU: Upload File to Device", "category": "NodeMCU" },
+      { "command": "nodemcu-vscode.uploadChanges", "title": "NodeMCU: Upload Changes to Device", "category": "NodeMCU" },
       { "command": "nodemcu-vscode.downloadFile", "title": "NodeMCU: Download File from Device", "category": "NodeMCU" },
       { "command": "nodemcu-vscode.deleteFile", "title": "NodeMCU: Delete File on Device", "category": "NodeMCU" },
       { "command": "nodemcu-vscode.refreshExplorer", "title": "NodeMCU: Refresh Device Explorer", "category": "NodeMCU" },
