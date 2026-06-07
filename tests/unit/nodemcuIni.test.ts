@@ -11,7 +11,7 @@ import {
 describe("parseIni", () => {
   it("returns defaults on empty input", () => {
     const cfg = parseIni("");
-    expect(cfg.nodemcu.firmware_path).toBe("../nodemcu-firmware");
+    expect(cfg.nodemcu.firmware_path).toBe("");
     expect(cfg.nodemcu.lua_version).toBe("53");
     expect(cfg.nodemcu.baud).toBe(115200);
   });

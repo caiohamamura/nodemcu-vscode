@@ -122,6 +122,11 @@
     "configuration": {
       "title": "NodeMCU",
       "properties": {
+        "nodemcu-vscode.src": {
+          "type": "string",
+          "default": "src",
+          "description": "Directory containing scripts to monitor and upload automatically."
+        },
         "nodemcu-vscode.firmwarePath": {
           "type": "string",
           "default": "../nodemcu-firmware",

@@ -15,6 +15,7 @@ export interface NodemcuSection {
   flash_size: string;
   parallel: boolean;
   verbose: boolean;
+  src: string;
 }
 
 export interface LuaModuleEntry {
@@ -37,7 +38,7 @@ export interface NodemcuConfig {
 }
 
 const DEFAULT_NODEMCU: NodemcuSection = {
-  firmware_path: "../nodemcu-firmware",
+  firmware_path: "",
   lua_version: "53",
   lua_number_integral: false,
   lua_number_64bits: false,
@@ -49,6 +50,7 @@ const DEFAULT_NODEMCU: NodemcuSection = {
   flash_size: "1M",
   parallel: true,
   verbose: false,
+  src: "src",
 };
 
 export function defaultConfig(): NodemcuConfig {
@@ -121,6 +123,7 @@ export function parseIni(content: string): NodemcuConfig {
   config.nodemcu.flash_size = coerceString(n.flash_size, DEFAULT_NODEMCU.flash_size);
   config.nodemcu.parallel = coerceBool(n.parallel, DEFAULT_NODEMCU.parallel);
   config.nodemcu.verbose = coerceBool(n.verbose, DEFAULT_NODEMCU.verbose);
+  config.nodemcu.src = coerceString(n.src, DEFAULT_NODEMCU.src);
 
   for (const [key, value] of Object.entries(c)) {
     config.c_modules[key.toLowerCase()] = coerceBool(value, true);
@@ -156,6 +159,7 @@ export function serializeIni(config: NodemcuConfig): string {
     flash_size: config.nodemcu.flash_size,
     parallel: config.nodemcu.parallel,
     verbose: config.nodemcu.verbose,
+    src: config.nodemcu.src,
   };
   out.c_modules = {};
   for (const [k, v] of Object.entries(config.c_modules)) {

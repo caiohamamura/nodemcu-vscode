@@ -21,7 +21,7 @@ import { SerialDiscovery, type SerialPort } from "./flash/serialDiscovery";
 import { NodemcuTool, type FileEntry } from "./upload/nodemcuTool";
 import { StatusEmitter, type BuildState } from "./status/statusBar";
 import { listLuaModulesFromFirmware, listCModules, type LuaModuleInfo, type CModuleInfo } from "./luaPicker/moduleList";
-import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
+import { resolveAllLuaModules, type ResolvedLuaModule } from "./luaPicker/luaModuleResolver";
 import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
 import { ensureManagedFirmware } from "./firmware/managedFirmware";
 
@@ -460,6 +460,26 @@ async function doInitProject(): Promise<void> {
   updatePortStatusBar(cachedConfig);
 }
 
+function getFilesRecursively(dir: string): string[] {
+  let results: string[] = [];
+  if (!fs.existsSync(dir)) return results;
+  const list = fs.readdirSync(dir);
+  for (const file of list) {
+    if (file === "." || file === "..") continue;
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      if (file === ".git" || file === "node_modules" || file === ".vscode" || file === ".tmp-user-dir" || file === ".tmp-extensions") {
+        continue;
+      }
+      results = results.concat(getFilesRecursively(fullPath));
+    } else if (stat.isFile()) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
 async function pickWorkspaceFile(): Promise<vscode.Uri | null> {
   const picks = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: "Upload" });
   return picks?.[0] ?? null;
@@ -468,10 +488,10 @@ async function pickWorkspaceFile(): Promise<vscode.Uri | null> {
 async function doUploadFile(uri?: vscode.Uri): Promise<void> {
   const cfg = getConfigOrNull();
   if (!cfg) return;
-  const file = uri ?? (await pickWorkspaceFile());
-  if (!file) return;
 
+  const workspaceRoot = getWorkspaceRoot();
   const fw = await getFirmwarePath();
+
   if (fw) {
     const headerPath = userModulesHeader(fw);
     if (isCModulesConfigChanged(headerPath, cfg)) {
@@ -484,6 +504,77 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
     }
   }
 
+  // Determine files to upload
+  const filesToUpload: { localPath: string; remoteName: string }[] = [];
+  let isAutoUpload = false;
+  let srcSetting = "src";
+
+  if (uri) {
+    filesToUpload.push({ localPath: uri.fsPath, remoteName: path.basename(uri.fsPath) });
+  } else {
+    srcSetting = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("src") || cfg.nodemcu.src || "src";
+    const srcDir = workspaceRoot ? path.resolve(workspaceRoot, srcSetting) : null;
+
+    if (srcDir && fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory()) {
+      isAutoUpload = true;
+      const srcFiles = getFilesRecursively(srcDir);
+
+      let localModules: ResolvedLuaModule[] = [];
+      if (fw && workspaceRoot) {
+        const resolved = await resolveAllLuaModules(workspaceRoot, fw, cfg);
+        localModules = resolved.filter((m) => !m.isRemote && m.exists);
+      }
+
+      const seen = new Set<string>();
+      for (const file of srcFiles) {
+        if (!seen.has(file)) {
+          seen.add(file);
+          const rel = path.relative(srcDir, file).replace(/\\/g, "/");
+          filesToUpload.push({ localPath: file, remoteName: rel });
+        }
+      }
+      for (const m of localModules) {
+        const file = m.resolvedLocalPath!;
+        if (!seen.has(file)) {
+          seen.add(file);
+          filesToUpload.push({ localPath: file, remoteName: path.basename(file) });
+        }
+      }
+    } else {
+      const picked = await pickWorkspaceFile();
+      if (!picked) return;
+      filesToUpload.push({ localPath: picked.fsPath, remoteName: path.basename(picked.fsPath) });
+      vscode.window.showInformationMessage("Tip: Set a 'src' folder or configure 'nodemcu-vscode.src' in settings to track and upload modified files automatically.");
+    }
+  }
+
+  let changedFiles = filesToUpload;
+  if (isAutoUpload) {
+    const uploadTimestamps = extensionContext
+      ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
+      : {};
+
+    changedFiles = filesToUpload.filter((f) => {
+      if (!fs.existsSync(f.localPath)) return false;
+      const mtime = fs.statSync(f.localPath).mtimeMs;
+      const lastMtime = uploadTimestamps[f.localPath] ?? 0;
+      return mtime > lastMtime;
+    });
+
+    if (changedFiles.length === 0) {
+      const choice = await vscode.window.showInformationMessage(
+        `No files changed in '${srcSetting}'. Upload all files anyway?`,
+        "Yes",
+        "No"
+      );
+      if (choice !== "Yes") {
+        outputChannel.appendLine("No files have changed since last upload. Upload cancelled.");
+        return;
+      }
+      changedFiles = filesToUpload;
+    }
+  }
+
   const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
   const tool = new NodemcuTool(new Shell());
   if (!(await tool.isInstalled(python))) {
@@ -492,37 +583,68 @@ async function doUploadFile(uri?: vscode.Uri): Promise<void> {
   }
   const port = await ensurePort(cfg);
   if (!port) return;
-  const remoteName = path.basename(file.fsPath);
-  setStatus("uploading", `uploading ${remoteName}...`);
-  const r = await tool.upload(
-    { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
-    file.fsPath,
-    remoteName,
-    (s) => outputChannel.append(s),
-  );
-  if (r.success) {
-    setStatus("success", `uploaded ${remoteName}`);
-    vscode.window.showInformationMessage(`Uploaded ${remoteName}`);
 
-    if (remoteName === "init.lua") {
-      const workspaceRoot = getWorkspaceRoot();
-      if (fw && workspaceRoot) {
-        const resolved = await resolveAllLuaModules(workspaceRoot, fw, cfg);
-        const local = resolved.filter((m) => !m.isRemote && m.exists);
-        for (const m of local) {
-          outputChannel.appendLine(`Uploading Lua module ${m.name} alongside init.lua...`);
-          await tool.upload(
-            { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
-            m.resolvedLocalPath!,
-            path.basename(m.resolvedLocalPath!),
-            (s) => outputChannel.append(s),
-          );
+  let successCount = 0;
+  let failCount = 0;
+
+  setStatus("uploading", `Uploading ${changedFiles.length} file(s)...`);
+
+  const uploadTimestamps = extensionContext
+    ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
+    : {};
+
+  for (const file of changedFiles) {
+    if (!fs.existsSync(file.localPath)) continue;
+    outputChannel.appendLine(`Uploading ${file.localPath} as ${file.remoteName}...`);
+    const r = await tool.upload(
+      { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
+      file.localPath,
+      file.remoteName,
+      (s) => outputChannel.append(s),
+    );
+    if (r.success) {
+      successCount++;
+      const mtime = fs.statSync(file.localPath).mtimeMs;
+      uploadTimestamps[file.localPath] = mtime;
+    } else {
+      failCount++;
+      outputChannel.appendLine(`Failed to upload ${file.remoteName}: ${r.error}`);
+    }
+  }
+
+  if (extensionContext) {
+    await extensionContext.workspaceState.update("nodemcu.uploadTimestamps", uploadTimestamps);
+  }
+
+  // Backwards compatible lua modules upload for single init.lua file
+  if (!isAutoUpload && changedFiles.length === 1 && changedFiles[0].remoteName === "init.lua") {
+    if (fw && workspaceRoot) {
+      const resolved = await resolveAllLuaModules(workspaceRoot, fw, cfg);
+      const local = resolved.filter((m) => !m.isRemote && m.exists);
+      for (const m of local) {
+        outputChannel.appendLine(`Uploading Lua module ${m.name} alongside init.lua...`);
+        const r = await tool.upload(
+          { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
+          m.resolvedLocalPath!,
+          path.basename(m.resolvedLocalPath!),
+          (s) => outputChannel.append(s),
+        );
+        if (r.success) {
+          successCount++;
+        } else {
+          failCount++;
+          outputChannel.appendLine(`Failed to upload Lua module ${m.name}: ${r.error}`);
         }
       }
     }
+  }
+
+  if (failCount > 0) {
+    setStatus("error", `upload FAILED (${failCount} errors)`);
+    vscode.window.showErrorMessage(`Uploaded ${successCount} files, ${failCount} failed.`);
   } else {
-    setStatus("error", `upload FAILED`);
-    vscode.window.showErrorMessage(`Upload failed: ${r.error}`);
+    setStatus("success", `uploaded ${successCount} files`);
+    vscode.window.showInformationMessage(`Successfully uploaded ${successCount} file(s).`);
   }
 }
 
