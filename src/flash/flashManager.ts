@@ -1,3 +1,5 @@
+import * as path from "node:path";
+import * as fs from "node:fs";
 import { Shell } from "../util/shell";
 import { esptoolFlashCommand } from "../build/toolchain";
 import { esptoolScript, binOutput } from "../util/paths";
@@ -24,18 +26,37 @@ export class FlashManager {
 
   async flash(ctx: FlashContext): Promise<FlashResult> {
     const start = Date.now();
-    const cmd = esptoolFlashCommand({
-      python: ctx.python,
-      esptool: esptoolScript(ctx.firmwarePath),
-      port: ctx.port,
-      baud: ctx.config.nodemcu.baud,
-      flashMode: ctx.config.nodemcu.flash_mode,
-      flashFreq: ctx.config.nodemcu.flash_freq,
-      flashSize: ctx.config.nodemcu.flash_size,
-      bin0: `${binOutput(ctx.firmwarePath)}/0x00000.bin`,
-      bin1: `${binOutput(ctx.firmwarePath)}/0x10000.bin`,
-      extraFiles: ctx.config.flash.extra_files,
-    });
+    const esptool = esptoolScript(ctx.firmwarePath);
+    const bin0 = path.join(binOutput(ctx.firmwarePath), "0x00000.bin");
+    const bin1 = path.join(binOutput(ctx.firmwarePath), "0x10000.bin");
+    const cmd = fs.existsSync(esptool)
+      ? esptoolFlashCommand({
+          python: ctx.python,
+          esptool,
+          port: ctx.port,
+          baud: ctx.config.nodemcu.baud,
+          flashMode: ctx.config.nodemcu.flash_mode,
+          flashFreq: ctx.config.nodemcu.flash_freq,
+          flashSize: ctx.config.nodemcu.flash_size,
+          bin0,
+          bin1,
+          extraFiles: ctx.config.flash.extra_files,
+        })
+      : {
+          command: ctx.python,
+          args: [
+            "-m", "esptool",
+            "--port", ctx.port,
+            "--baud", String(ctx.config.nodemcu.baud),
+            "write_flash",
+            "--flash_mode", ctx.config.nodemcu.flash_mode,
+            "--flash_freq", ctx.config.nodemcu.flash_freq,
+            "--flash_size", ctx.config.nodemcu.flash_size,
+            "0x00000", bin0,
+            "0x10000", bin1,
+            ...ctx.config.flash.extra_files.flatMap((f) => [f.offset, f.path]),
+          ],
+        };
     const r = await this.shell.run(cmd.command, cmd.args, {
       onStdout: ctx.onLog,
       onStderr: ctx.onStderr,

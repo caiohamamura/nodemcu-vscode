@@ -1,0 +1,5 @@
+allowBuilds:
+  '@serialport/bindings': true
+  '@serialport/bindings-cpp': true
+  esbuild: true
+  serialport: true

@@ -31,7 +31,7 @@ export class Shell {
     return await new Promise<ShellRunResult>((resolve, reject) => {
       const child: ChildProcess = spawn(command, args, {
         cwd: opts.cwd,
-        env: this.env,
+        env: opts.env ? { ...this.env, ...opts.env } : this.env,
         windowsHide: opts.windowsHide ?? true,
         signal: opts.signal,
       });

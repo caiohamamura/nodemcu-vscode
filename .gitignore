@@ -5,3 +5,5 @@ dist/
 Thumbs.db
 *.log
 .env
+.tmp-extensions
+.tmp-user-dir

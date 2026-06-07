@@ -60,10 +60,20 @@ export interface CModuleInfo {
 }
 
 export async function listCModules(firmwarePath: string): Promise<CModuleInfo[]> {
+  const logFile = path.join(path.dirname(path.dirname(firmwarePath)), "c_modules_debug.log");
+  const log = (msg: string) => {
+    try {
+      require("node:fs").appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`, "utf-8");
+    } catch {}
+  };
+
+  log(`listCModules called with firmwarePath: ${firmwarePath}`);
   const out: CModuleInfo[] = [];
   const coreDir = appModulesDir(firmwarePath);
+  log(`appModulesDir: ${coreDir}`);
   try {
     const files = await fs.readdir(coreDir);
+    log(`readdir found ${files.length} files`);
     for (const f of files) {
       if (f.endsWith(".c")) {
         out.push({
@@ -73,20 +83,29 @@ export async function listCModules(firmwarePath: string): Promise<CModuleInfo[]>
         });
       }
     }
-  } catch {
-    // missing
+  } catch (err) {
+    log(`Error reading coreDir: ${err instanceof Error ? err.stack : String(err)}`);
   }
   const optionalNames = ["coap", "dht", "http", "mqtt", "pcm", "sjson", "tsl2561", "websocket"];
   for (const name of optionalNames) {
-    if (await exists(path.join(firmwarePath, "app", name))) {
-      out.push({ name, sourceFile: path.join(firmwarePath, "app", name), category: "optional" });
+    try {
+      if (await exists(path.join(firmwarePath, "app", name))) {
+        out.push({ name, sourceFile: path.join(firmwarePath, "app", name), category: "optional" });
+      }
+    } catch (err) {
+      log(`Error checking optional ${name}: ${err}`);
     }
   }
   for (const lib of ["u8g2", "ucg"]) {
-    if (await exists(path.join(firmwarePath, "app", `${lib}lib`))) {
-      out.push({ name: lib, sourceFile: path.join(firmwarePath, "app", `${lib}lib`), category: "library" });
+    try {
+      if (await exists(path.join(firmwarePath, "app", `${lib}lib`))) {
+        out.push({ name: lib, sourceFile: path.join(firmwarePath, "app", `${lib}lib`), category: "library" });
+      }
+    } catch (err) {
+      log(`Error checking library ${lib}: ${err}`);
     }
   }
+  log(`Returning ${out.length} modules`);
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 

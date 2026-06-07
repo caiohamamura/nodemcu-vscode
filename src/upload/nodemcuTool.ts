@@ -1,4 +1,6 @@
 import { Shell } from "../util/shell";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 export interface NodemcuToolOptions {
   python: string;
@@ -16,64 +18,77 @@ export interface FileEntry {
 export class NodemcuTool {
   constructor(private shell: Shell) {}
 
-  async isInstalled(python: string): Promise<boolean> {
-    const r = await this.shell.run(python, ["-c", "import nodemcu_tool; print(getattr(nodemcu_tool, '__version__', 'ok'))"]);
+  private command(): { command: string; argsPrefix: string[] } {
+    const localScript = path.resolve(__dirname, "..", "node_modules", "nodemcu-tool", "bin", "nodemcu-tool.js");
+    const sourceTreeScript = path.resolve(__dirname, "..", "..", "node_modules", "nodemcu-tool", "bin", "nodemcu-tool.js");
+    const script = fs.existsSync(localScript) ? localScript : sourceTreeScript;
+    if (fs.existsSync(script)) return { command: "node", argsPrefix: [script] };
+    return { command: "nodemcu-tool", argsPrefix: [] };
+  }
+
+  private args(opts: NodemcuToolOptions, commandArgs: string[]): { command: string; args: string[] } {
+    const cmd = this.command();
+    return {
+      command: cmd.command,
+      args: [
+        ...cmd.argsPrefix,
+        "--port", opts.port,
+        "--baud", String(opts.baudUpload || opts.baud),
+        "--connection-delay", "1000",
+        ...commandArgs,
+      ],
+    };
+  }
+
+  async isInstalled(_python: string): Promise<boolean> {
+    const cmd = this.command();
+    const r = await this.shell.run(cmd.command, [...cmd.argsPrefix, "--version"]);
     return r.exitCode === 0;
   }
 
-  async install(python: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
-    const r = await this.shell.run(python, ["-m", "pip", "install", "--user", "nodemcu-tool"], { onStdout: onLog, onStderr: onLog });
+  async install(_python: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const r = await this.shell.run("npm", ["install", "nodemcu-tool"], { onStdout: onLog, onStderr: onLog });
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async upload(opts: NodemcuToolOptions, localPath: string, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
-    const args = [
-      "-m", "nodemcu_tool",
-      "--port", opts.port,
-      "--baud", String(opts.baudUpload),
+    const cmd = this.args(opts, [
       "upload",
-      opts.compile ? "-c" : "-f",
+      ...(opts.compile ? ["--compile"] : []),
+      "--remotename", remoteName,
       localPath,
-      remoteName,
-    ];
-    const r = await this.shell.run(opts.python, args, { onStdout: onLog, onStderr: onLog });
+    ]);
+    const r = await this.shell.run(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async download(opts: NodemcuToolOptions, remoteName: string, localPath: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
-    const args = [
-      "-m", "nodemcu_tool",
-      "--port", opts.port,
-      "--baud", String(opts.baudUpload),
-      "download",
-      remoteName,
-      localPath,
-    ];
-    const r = await this.shell.run(opts.python, args, { onStdout: onLog, onStderr: onLog });
+    const destinationDir = path.dirname(localPath);
+    const downloadedPath = path.join(destinationDir, remoteName);
+    const cmd = this.args(opts, ["download", remoteName]);
+    const r = await this.shell.run(cmd.command, cmd.args, { cwd: destinationDir, onStdout: onLog, onStderr: onLog });
+    if (r.exitCode === 0 && downloadedPath !== localPath && fs.existsSync(downloadedPath)) {
+      fs.renameSync(downloadedPath, localPath);
+    }
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async remove(opts: NodemcuToolOptions, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
-    const args = [
-      "-m", "nodemcu_tool",
-      "--port", opts.port,
-      "--baud", String(opts.baudUpload),
-      "remove",
-      remoteName,
-    ];
-    const r = await this.shell.run(opts.python, args, { onStdout: onLog, onStderr: onLog });
+    const cmd = this.args(opts, ["remove", remoteName]);
+    const r = await this.shell.run(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async listFiles(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<FileEntry[]> {
-    const args = [
-      "-m", "nodemcu_tool",
-      "--port", opts.port,
-      "--baud", String(opts.baudUpload),
-      "ls",
-    ];
-    const r = await this.shell.run(opts.python, args, { onStdout: onLog, onStderr: onLog });
+    const cmd = this.args(opts, ["fsinfo", "--json"]);
+    const r = await this.shell.run(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
     if (r.exitCode !== 0) return [];
+    try {
+      const parsed = JSON.parse(r.stdout) as { files?: Array<{ name: string; size: number }> };
+      return (parsed.files ?? []).map((f) => ({ name: f.name, size: Number(f.size) || 0 }));
+    } catch {
+      // Fall back to the legacy parser used by older tests and hand-written stubs.
+    }
     return r.stdout
       .split(/\r?\n/)
       .map((l) => l.trim())

@@ -81,8 +81,10 @@ export function cmakeBuildCommand(opts: {
   parallel: boolean;
   jobCount: number;
   verbose: boolean;
+  target?: string;
 }): CommandSpec {
   const args = ["--build", opts.buildDir];
+  if (opts.target) args.push("--target", opts.target);
   if (opts.parallel && opts.jobCount > 0) {
     args.push("-j", String(opts.jobCount));
   }
