@@ -122,4 +122,20 @@ describe("OperationGate", () => {
     // Should have waited at most ~50ms + some slack, not 3000ms (the default)
     expect(elapsed).toBeLessThan(500);
   });
+
+  it("interruptTimeoutMs also limits a stuck interrupt hook", async () => {
+    const gate = new OperationGate(
+      { onInterrupt: async () => { await new Promise<void>(() => {}); } },
+      { interruptTimeoutMs: 50 },
+    );
+
+    void gate.run("Stuck", async () => {
+      await new Promise<void>(() => {});
+    });
+
+    const t0 = Date.now();
+    const second = gate.run("Next", async () => "next");
+    await expect(second).resolves.toBe("next");
+    expect(Date.now() - t0).toBeLessThan(700);
+  });
 });

@@ -12,6 +12,7 @@ const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || "COM7";
 const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
 const DEBUG_PORT = Number(process.env.NODEMCU_VSCODE_E2E_CDP_PORT || "9238");
 const FIRMWARE_REPO = process.env.NODEMCU_VSCODE_E2E_FIRMWARE_REPO || "C:/Users/caioh/src/nodemcu-firmware";
+const PYTHON = process.env.NODEMCU_VSCODE_E2E_PYTHON || process.env.NODEMCU_VSCODE_PYTHON || "C:/Users/caioh/micromamba/envs/esp/python.exe";
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const WORKSPACE_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-workspace");
 const USER_DATA_DIR = path.join(os.tmpdir(), `nodemcu-vscode-e2e-user-data-${RUN_ID}`);
@@ -29,7 +30,7 @@ const hasCMake = (() => {
 })();
 const hasEsptool = (() => {
   try {
-    const r = child_process.spawnSync("python", ["-c", "import esptool; print(esptool.__version__)"], { encoding: "utf-8" });
+    const r = child_process.spawnSync(PYTHON, ["-c", "import esptool; print(esptool.__version__)"], { encoding: "utf-8" });
     return r.status === 0 && /^\d+\.\d+/.test(r.stdout.trim());
   } catch {
     return false;
@@ -153,7 +154,8 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     const settingsPath = path.join(WORKSPACE_DIR, ".vscode", "settings.json");
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify({
-      "nodemcu-vscode.firmwarePath": FIRMWARE_REPO
+      "nodemcu-vscode.firmwarePath": FIRMWARE_REPO,
+      "nodemcu-vscode.pythonPath": PYTHON
     }, null, 2));
 
     // 2. Spawn VS Code
@@ -179,7 +181,7 @@ describe_("E2E CDP + Hardware Device Tests", () => {
 
     // 4. Back up firmware from COM7 just in case
     const backupBin = path.join(os.tmpdir(), "nodemcu-e2e-backup.bin");
-    const r = child_process.spawnSync("python", [
+    const r = child_process.spawnSync(PYTHON, [
       "-m", "esptool", "--port", PORT, "--baud", String(BAUD_RATE),
       "read_flash", "0x0", "0x1000", backupBin
     ], { encoding: "utf-8" });
@@ -289,10 +291,6 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     return JSON.stringify(value);
   }
 
-  function escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
   async function pressKey(key: string, code: string, windowsVirtualKeyCode: number, modifiers = 0): Promise<void> {
     await client.send("Input.dispatchKeyEvent", { type: "keyDown", windowsVirtualKeyCode, key, code, modifiers });
     await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode, key, code, modifiers });
@@ -328,11 +326,11 @@ describe_("E2E CDP + Hardware Device Tests", () => {
       await sleep(1000);
       const visible = await client.evaluate(`
         (() => Array.from(document.querySelectorAll('.pane-header'))
-          .some(h => (h.getAttribute('aria-label') || '').includes('Device Files')))()
+          .some(h => (h.getAttribute('aria-label') || '').includes('Device Explorer')))()
       `);
       if (visible) return;
     }
-    throw new Error("NodeMCU sidebar did not show the Device Files pane");
+    throw new Error("NodeMCU sidebar did not show the Device Explorer pane");
   }
 
   async function expandSidebarPanes(): Promise<void> {
@@ -343,65 +341,6 @@ describe_("E2E CDP + Hardware Device Tests", () => {
       })()
     `);
     await sleep(1000);
-  }
-
-  async function waitForStatusText(pattern: RegExp, timeoutMs = 45_000): Promise<string> {
-    const started = Date.now();
-    let last = "";
-    while (Date.now() - started < timeoutMs) {
-      last = (await getStatusItems()).join(" | ");
-      if (pattern.test(last)) return last;
-      await sleep(500);
-    }
-    throw new Error(`Timed out waiting for status ${pattern}. Last status: ${last}`);
-  }
-
-  async function waitForDeviceFileRow(remoteName: string, timeoutMs = 45_000): Promise<{ x: number; y: number; text: string }> {
-    const started = Date.now();
-    let lastPaneState = "";
-    while (Date.now() - started < timeoutMs) {
-      const row = await client.evaluate(`
-        (() => {
-          const remoteName = ${jsString(remoteName)};
-          const panes = Array.from(document.querySelectorAll('.pane'));
-          const paneState = panes.map(p => {
-            const title = (p.querySelector('.pane-header')?.getAttribute('aria-label') || p.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-            const rows = Array.from(p.querySelectorAll('.monaco-list-row')).map(r => (r.textContent || '').trim().replace(/\\s+/g, ' '));
-            return title + ': [' + rows.join(' | ') + ']';
-          }).join(' || ');
-          const pane = panes.find(p => (p.querySelector('.pane-header')?.getAttribute('aria-label') || '').includes('Device Files'));
-          const rows = pane ? Array.from(pane.querySelectorAll('.monaco-list-row')) : [];
-          const row = rows.find(r => ((r.textContent || '').trim()).includes(remoteName));
-          if (!row) return { paneState };
-          row.scrollIntoView({ block: 'center' });
-          const rect = row.getBoundingClientRect();
-          return {
-            x: rect.left + Math.min(48, Math.max(12, rect.width / 3)),
-            y: rect.top + rect.height / 2,
-            text: (row.textContent || '').trim().replace(/\\s+/g, ' '),
-            paneState
-          };
-        })()
-      `) as { x?: number; y?: number; text?: string; paneState?: string } | null;
-      if (row?.paneState) lastPaneState = row.paneState;
-      if (row?.x !== undefined && row.y !== undefined && row.text) return { x: row.x, y: row.y, text: row.text };
-      await sleep(1000);
-    }
-    throw new Error(`Device Files row not found for ${remoteName}. Last panes: ${lastPaneState}`);
-  }
-
-  async function openDeviceFileFromSidebar(remoteName: string): Promise<void> {
-    await focusNodeMcuSidebar();
-    await expandSidebarPanes();
-    await runCommandPalette("NodeMCU: Refresh Device Explorer");
-    await focusNodeMcuSidebar();
-    await expandSidebarPanes();
-    await pressKey("Escape", "Escape", 27);
-    await sleep(500);
-    const row = await waitForDeviceFileRow(remoteName);
-    console.log(`Clicking Device Files row: ${row.text}`);
-    await clickAt(row.x, row.y);
-    await waitForStatusText(new RegExp(`opened\\s+${escapeRegExp(remoteName)}`, "i"), 60_000);
   }
 
   async function getActiveEditorSummary(): Promise<{ tab: string; aria: string; text: string }> {
@@ -491,14 +430,13 @@ describe_("E2E CDP + Hardware Device Tests", () => {
   async function waitForLiveSaveResult(remoteName: string, timeoutMs = 70_000): Promise<"success" | "error" | "timeout"> {
     const started = Date.now();
     let lastErrorStatus = "";
-    const savedPattern = new RegExp(`saved\\s+${escapeRegExp(remoteName)}`, "i");
     while (Date.now() - started < timeoutMs) {
       const joined = (await getStatusItems()).join(" | ");
-      if (savedPattern.test(joined)) return "success";
-      if (/save FAILED|upload FAILED|error/i.test(joined)) lastErrorStatus = joined;
+      if (/synced\s+\d+\s+operation/i.test(joined)) return "success";
+      if (/sync FAILED|upload FAILED|save FAILED|error/i.test(joined)) lastErrorStatus = joined;
       await sleep(500);
     }
-    console.log(`Timed out waiting for live save result. Last error status: ${lastErrorStatus}`);
+    console.log(`Timed out waiting for save-sync result for ${remoteName}. Last error status: ${lastErrorStatus}`);
     await dumpNodeMcuOutput();
     return lastErrorStatus ? "error" : "timeout";
   }
@@ -553,15 +491,15 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     while (Date.now() - started < timeoutMs) {
       const status = await getStatusItems();
       const joined = status.join(" | ");
-      if (/uploading|building|flashing/i.test(joined)) {
+      if (/uploading|building|flashing|formatting|syncing/i.test(joined)) {
         sawActiveState = true;
       }
-      if (/upload FAILED|error/i.test(joined)) {
+      if (/sync FAILED|upload FAILED|error/i.test(joined)) {
         console.log("Upload status indicates failure:", joined);
         await dumpNodeMcuOutput();
         return "error";
       }
-      if (sawActiveState && /uploaded \d+ files?/i.test(joined)) {
+      if (sawActiveState && /synced \d+ operation/i.test(joined)) {
         console.log("Upload status indicates success:", joined);
         return "success";
       }
@@ -624,6 +562,25 @@ describe_("E2E CDP + Hardware Device Tests", () => {
       console.log(`Did not observe ${marker}. Serial tail:\n${lines.slice(-40).join("\n")}`);
     }
     return found;
+  }
+
+  async function clickNotificationAction(label: string, timeoutMs = 30_000): Promise<boolean> {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const clicked = await client.evaluate(`
+        (() => {
+          const label = ${jsString(label)};
+          const buttons = Array.from(document.querySelectorAll('a.monaco-button,.monaco-button,button,.action-label'));
+          const button = buttons.find((e) => ((e.textContent || e.getAttribute('aria-label') || '').trim() === label));
+          if (!button) return false;
+          button.click();
+          return true;
+        })()
+      `);
+      if (clicked) return true;
+      await sleep(500);
+    }
+    return false;
   }
 
   async function captureRestartOutputLines(timeoutMs = 14_000): Promise<string[]> {
@@ -709,24 +666,8 @@ describe_("E2E CDP + Hardware Device Tests", () => {
   });
 
   it("2. Verifies UI and toggles a C module", async () => {
-    // Focus sidebar
-    await client.evaluate(`
-      (() => {
-        const btn = document.querySelector('[aria-label*="NodeMCU"]') || 
-                    Array.from(document.querySelectorAll('.action-item')).find(e => e.getAttribute('title') && e.getAttribute('title').includes('NodeMCU'));
-        if (btn) btn.click();
-      })()
-    `);
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Expand panes
-    await client.evaluate(`
-      (() => {
-        const headers = Array.from(document.querySelectorAll('.pane-header[aria-expanded="false"]'));
-        headers.forEach(h => h.click());
-      })()
-    `);
-    await new Promise(r => setTimeout(r, 1000));
+    await focusNodeMcuSidebar();
+    await expandSidebarPanes();
 
     // Toggle 'adc' C module
     await client.evaluate(`
@@ -757,6 +698,7 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     cfg.nodemcu.port = PORT;
     cfg.nodemcu.baud = BAUD_RATE;
     cfg.nodemcu.upload_baud = BAUD_RATE;
+    cfg.devices.uuids = [];
     for (const moduleName of REQUIRED_UPLOAD_MODULES) {
       cfg.c_modules[moduleName] = true;
     }
@@ -785,8 +727,11 @@ describe_("E2E CDP + Hardware Device Tests", () => {
 
     // Try to trigger the upload command
     await runCommandPalette("NodeMCU: Upload File to Device");
+    expect(await clickNotificationAction("Proceed", 45_000)).toBe(true);
 
     expect(await waitForUploadResult()).toBe("success");
+    const afterSync = parseIni(fs.readFileSync(path.join(WORKSPACE_DIR, "nodemcu.ini"), "utf-8"));
+    expect(afterSync.devices.uuids.length).toBeGreaterThan(0);
 
     const found = await verifyInitLuaPrints("HELLO_FROM_CDP_E2E_TEST");
     if (!found) await dumpNodeMcuOutput();
@@ -816,23 +761,29 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     expect(found).toBe(true);
   }, 100_000);
 
-  it("7. Opens init.lua from Device Files and saves rapid live edits to the device", async () => {
-    await openDeviceFileFromSidebar("init.lua");
+  it("7. Saves workspace src/init.lua edits to the device", async () => {
+    await runCommandPalette("Go to File...");
+    await sleep(500);
+    await client.send("Input.insertText", { text: "init.lua" });
+    await sleep(1000);
+    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+    await sleep(2000);
 
     const opened = await waitForActiveEditor("init.lua", "HELLO_FROM_UPLOAD_CHANGES");
     expect(opened.tab.includes("init.lua") || opened.aria.includes("init.lua")).toBe(true);
     expect(opened.text).toContain("HELLO_FROM_UPLOAD_CHANGES");
 
-    await replaceActiveEditorText('print("Hello world")\n');
+    await replaceActiveEditorText('print("HELLO_FROM_SRC_SAVE_SYNC")\n');
     let editor = await getActiveEditorSummary();
-    expect(editor.text).toContain("Hello world");
+    expect(editor.text).toContain("HELLO_FROM_SRC_SAVE_SYNC");
 
     await saveActiveEditor();
-    await waitForStatusText(/saving\s+init\.lua/i, 15_000);
+    expect(await waitForLiveSaveResult("init.lua")).toBe("success");
 
-    await replaceActiveEditorText('print("Hello world!")\n');
+    await replaceActiveEditorText('print("HELLO_FROM_SRC_SAVE_SYNC_2")\n');
     editor = await getActiveEditorSummary();
-    expect(editor.text).toContain("Hello world!");
+    expect(editor.text).toContain("HELLO_FROM_SRC_SAVE_SYNC_2");
 
     await saveActiveEditor();
     expect(await waitForLiveSaveResult("init.lua")).toBe("success");
@@ -840,11 +791,11 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     await sleep(process.platform === "win32" ? 3500 : 1000);
     const lines = await captureRestartOutputLines();
     const normalizedLines = lines.map((line) => line.replace(/^>\s*/, "").trim());
-    if (!normalizedLines.includes("Hello world!")) {
+    if (!normalizedLines.includes("HELLO_FROM_SRC_SAVE_SYNC_2")) {
       await dumpNodeMcuOutput();
       console.log(`Serial restart output:\n${normalizedLines.join("\n")}`);
     }
-    expect(normalizedLines).toContain("Hello world!");
-    expect(normalizedLines).not.toContain("Hello world");
+    expect(normalizedLines).toContain("HELLO_FROM_SRC_SAVE_SYNC_2");
+    expect(normalizedLines).not.toContain("HELLO_FROM_SRC_SAVE_SYNC");
   }, 120_000);
 });

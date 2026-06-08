@@ -139,3 +139,154 @@ export const FileType = {
   Directory: 2,
   SymbolicLink: 64,
 } as const;
+
+export const TreeItemCollapsibleState = {
+  None: 0,
+  Collapsed: 1,
+  Expanded: 2,
+} as const;
+
+export const TreeItemCheckboxState = {
+  Unchecked: 0,
+  Checked: 1,
+} as const;
+
+export class ThemeIcon {
+  constructor(readonly id: string) {}
+}
+
+export class TreeItem {
+  description?: string;
+  contextValue?: string;
+  iconPath?: ThemeIcon;
+  command?: unknown;
+  resourceUri?: Uri;
+  checkboxState?: number;
+
+  constructor(readonly label: string, readonly collapsibleState?: number) {}
+}
+
+export const window = {
+  terminals: [] as Array<{
+    name: string;
+    processId?: Promise<number | undefined>;
+    sendText(text: string, addNewLine?: boolean): void;
+    dispose(): void;
+    show?(): void;
+  }>,
+  createdTerminals: [] as Array<{
+    name: string;
+    shellPath?: string;
+    shellArgs?: string[];
+    sent: Array<{ text: string; addNewLine?: boolean }>;
+    shown: boolean;
+    disposed: boolean;
+    processId: Promise<number | undefined>;
+    sendText(text: string, addNewLine?: boolean): void;
+    dispose(): void;
+    show(): void;
+  }>,
+  createTerminal(options: { name: string; shellPath?: string; shellArgs?: string[] }) {
+    const terminal = {
+      name: options.name,
+      shellPath: options.shellPath,
+      shellArgs: options.shellArgs,
+      sent: [] as Array<{ text: string; addNewLine?: boolean }>,
+      shown: false,
+      disposed: false,
+      processId: Promise.resolve(undefined),
+      sendText(text: string, addNewLine?: boolean): void {
+        this.sent.push({ text, addNewLine });
+      },
+      dispose(): void {
+        this.disposed = true;
+      },
+      show(): void {
+        this.shown = true;
+      },
+    };
+    this.createdTerminals.push(terminal);
+    this.terminals.push(terminal);
+    return terminal;
+  },
+  createOutputChannel() {
+    return {
+      append(): void {},
+      appendLine(): void {},
+      show(): void {},
+      dispose(): void {},
+    };
+  },
+  createStatusBarItem() {
+    return {
+      text: "",
+      tooltip: "",
+      command: "",
+      show(): void {},
+      dispose(): void {},
+    };
+  },
+  showErrorMessage: async () => undefined,
+  showInformationMessage: async () => undefined,
+  showWarningMessage: async () => undefined,
+  showOpenDialog: async () => undefined,
+  showSaveDialog: async () => undefined,
+  showQuickPick: async () => undefined,
+  showTextDocument: async () => undefined,
+  registerTreeDataProvider(): Disposable {
+    return new Disposable(() => {});
+  },
+  createTreeView() {
+    return {
+      onDidChangeSelection(): Disposable {
+        return new Disposable(() => {});
+      },
+      onDidChangeCheckboxState(): Disposable {
+        return new Disposable(() => {});
+      },
+      dispose(): void {},
+    };
+  },
+  withProgress: async (_options: unknown, task: () => unknown) => await task(),
+};
+
+export const StatusBarAlignment = {
+  Left: 1,
+  Right: 2,
+} as const;
+
+export const ProgressLocation = {
+  Notification: 15,
+} as const;
+
+export const workspace = {
+  getConfiguration() {
+    return {
+      get<T>(_key: string): T | undefined {
+        return undefined;
+      },
+    };
+  },
+  workspaceFolders: undefined,
+  textDocuments: [],
+  registerFileSystemProvider(): Disposable {
+    return new Disposable(() => {});
+  },
+  onDidSaveTextDocument(): Disposable {
+    return new Disposable(() => {});
+  },
+  openTextDocument: async () => ({}),
+};
+
+export const commands = {
+  registerCommand(): Disposable {
+    return new Disposable(() => {});
+  },
+  executeCommand: async () => undefined,
+};
+
+export const languages = {
+  registerCompletionItemProvider(): Disposable {
+    return new Disposable(() => {});
+  },
+};

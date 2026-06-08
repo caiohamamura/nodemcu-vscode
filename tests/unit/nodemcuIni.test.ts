@@ -6,6 +6,8 @@ import {
   setCModule,
   setLuaModule,
   getLuaModuleEntries,
+  addDeviceUuid,
+  hasDeviceUuid,
 } from "../../src/config/nodemcuIni";
 
 describe("parseIni", () => {
@@ -83,6 +85,14 @@ extra_files = spiffs.bin@0x100000, lfs.img@0x200000
     ]);
   });
 
+  it("parses device UUIDs from the devices section", () => {
+    const cfg = parseIni(`
+[devices]
+uuids = aabbccddeeff, 112233445566, aabbccddeeff
+`);
+    expect(cfg.devices.uuids).toEqual(["aabbccddeeff", "112233445566"]);
+  });
+
   it("coerces truthy/falsy strings correctly", () => {
     const ini = `
 [nodemcu]
@@ -108,6 +118,7 @@ describe("serializeIni", () => {
     original.c_modules.wifi = true;
     original.c_modules.mqtt = false;
     original.lua_modules.bh1750 = "lua/bh1750.lua";
+    original.devices.uuids = ["aabbccddeeff"];
     original.flash.extra_files = [{ path: "spiffs.bin", offset: "0x100000" }];
     const serialized = serializeIni(original);
     const reparsed = parseIni(serialized);
@@ -117,6 +128,7 @@ describe("serializeIni", () => {
     expect(reparsed.c_modules.wifi).toBe(true);
     expect(reparsed.c_modules.mqtt).toBe(false);
     expect(reparsed.lua_modules.bh1750).toBe("lua/bh1750.lua");
+    expect(reparsed.devices.uuids).toEqual(["aabbccddeeff"]);
     expect(reparsed.flash.extra_files).toEqual([{ path: "spiffs.bin", offset: "0x100000" }]);
   });
 });
@@ -141,6 +153,14 @@ describe("setCModule / setLuaModule", () => {
   it("setLuaModule lowercases the name and stores the source", () => {
     const c = setLuaModule(defaultConfig(), "BH1750", "lua/bh1750.lua");
     expect(c.lua_modules.BH1750).toBe("lua/bh1750.lua");
+  });
+
+  it("adds and checks device UUIDs without duplicating entries", () => {
+    let cfg = defaultConfig();
+    cfg = addDeviceUuid(cfg, "AABBCCDDEEFF");
+    cfg = addDeviceUuid(cfg, "aabbccddeeff");
+    expect(cfg.devices.uuids).toEqual(["aabbccddeeff"]);
+    expect(hasDeviceUuid(cfg, "aabbccddeeff")).toBe(true);
   });
 });
 

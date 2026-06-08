@@ -1,13 +1,17 @@
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { generateLuaApiFile, generateLuaRc } from "../../src/luaApi/apiFiles";
 
 describe("generateLuaApiFile", () => {
   it("emits @meta, NodeMCUModule class, and one entry per enabled module", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nodemcu-api-"));
     const r = generateLuaApiFile({
       modules: ["wifi", "node", "mqtt"],
-      outputPath: "/tmp/test-api.lua",
+      outputPath: path.join(tmp, "test-api.lua"),
     });
-    const content = require("node:fs").readFileSync(r, "utf-8");
+    const content = fs.readFileSync(r, "utf-8");
     expect(content).toContain("---@meta");
     expect(content).toContain("---@class NodeMCUModule");
     expect(content).toContain("wifi = wifi or {}");
@@ -16,11 +20,12 @@ describe("generateLuaApiFile", () => {
   });
 
   it("deduplicates and sorts module names", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nodemcu-api-"));
     const r = generateLuaApiFile({
       modules: ["mqtt", "wifi", "wifi", "adc"],
-      outputPath: "/tmp/test-api2.lua",
+      outputPath: path.join(tmp, "test-api2.lua"),
     });
-    const content = require("node:fs").readFileSync(r, "utf-8");
+    const content = fs.readFileSync(r, "utf-8");
     const wifiIdx = content.indexOf("wifi =");
     const adcIdx = content.indexOf("adc =");
     const mqttIdx = content.indexOf("mqtt =");

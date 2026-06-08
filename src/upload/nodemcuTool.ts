@@ -152,17 +152,17 @@ export class NodemcuTool {
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
-  async listFiles(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<FileEntry[]> {
+  async listFilesResult(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<{ success: boolean; files?: FileEntry[]; error?: string }> {
     const cmd = this.args(opts, ["fsinfo", "--json"]);
     const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog, signal: opts.signal });
-    if (r.exitCode !== 0) return [];
+    if (r.exitCode !== 0) return { success: false, error: r.stderr || r.stdout || "nodemcu-tool fsinfo failed" };
     try {
       const parsed = JSON.parse(r.stdout) as { files?: Array<{ name: string; size: number }> };
-      return (parsed.files ?? []).map((f) => ({ name: f.name, size: Number(f.size) || 0 }));
+      return { success: true, files: (parsed.files ?? []).map((f) => ({ name: f.name, size: Number(f.size) || 0 })) };
     } catch {
       // Fall back to the legacy parser used by older tests and hand-written stubs.
     }
-    return r.stdout
+    const files = r.stdout
       .split(/\r?\n/)
       .map((l: string) => l.trim())
       .filter((l: string) => l.length > 0)
@@ -172,5 +172,11 @@ export class NodemcuTool {
         const name = parts.slice(0, -1).join(" ");
         return { name, size: Number.isFinite(size) ? size : 0 };
       });
+    return { success: true, files };
+  }
+
+  async listFiles(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<FileEntry[]> {
+    const result = await this.listFilesResult(opts, onLog);
+    return result.files ?? [];
   }
 }

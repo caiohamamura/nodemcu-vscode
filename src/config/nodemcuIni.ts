@@ -31,6 +31,7 @@ export interface FlashExtraFile {
 
 export interface NodemcuConfig {
   nodemcu: NodemcuSection;
+  devices: { uuids: string[] };
   c_modules: Record<string, boolean>;
   lua_modules: Record<string, string>;
   flash: { extra_files: FlashExtraFile[] };
@@ -55,6 +56,7 @@ const DEFAULT_NODEMCU: NodemcuSection = {
 export function defaultConfig(): NodemcuConfig {
   return {
     nodemcu: { ...DEFAULT_NODEMCU },
+    devices: { uuids: [] },
     c_modules: {},
     lua_modules: {},
     flash: { extra_files: [] },
@@ -100,6 +102,7 @@ export function parseIni(content: string): NodemcuConfig {
   const l = (raw.lua_modules ?? {}) as Record<string, unknown>;
   const f = (raw.flash ?? {}) as Record<string, unknown>;
   const b = (raw.build ?? {}) as Record<string, unknown>;
+  const d = (raw.devices ?? {}) as Record<string, unknown>;
 
   const config = defaultConfig();
 
@@ -123,6 +126,7 @@ export function parseIni(content: string): NodemcuConfig {
   config.nodemcu.parallel = coerceBool(n.parallel, DEFAULT_NODEMCU.parallel);
   config.nodemcu.verbose = coerceBool(n.verbose, DEFAULT_NODEMCU.verbose);
   config.nodemcu.src = coerceString(n.src, DEFAULT_NODEMCU.src);
+  config.devices.uuids = parseUuidList(coerceString(d.uuids, ""));
 
   config.c_modules.file = true; // Mandatory for nodemcu-tool
   for (const [key, value] of Object.entries(c)) {
@@ -164,6 +168,9 @@ export function serializeIni(config: NodemcuConfig): string {
   if (config.nodemcu.firmware_path) {
     out.nodemcu.firmware_path = config.nodemcu.firmware_path;
   }
+  out.devices = {
+    uuids: normalizeUuidList(config.devices.uuids).join(", "),
+  };
   out.c_modules = {};
   for (const [k, v] of Object.entries(config.c_modules)) {
     out.c_modules[k] = v;
@@ -180,6 +187,35 @@ export function serializeIni(config: NodemcuConfig): string {
     verbose: config.build.verbose,
   };
   return ini.stringify(out);
+}
+
+function parseUuidList(value: string): string[] {
+  return normalizeUuidList(value.split(",").map((entry) => entry.trim()));
+}
+
+function normalizeUuidList(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+export function hasDeviceUuid(config: NodemcuConfig, uuid: string): boolean {
+  return normalizeUuidList(config.devices.uuids).includes(uuid.trim().toLowerCase());
+}
+
+export function addDeviceUuid(config: NodemcuConfig, uuid: string): NodemcuConfig {
+  return {
+    ...config,
+    devices: {
+      uuids: normalizeUuidList([...config.devices.uuids, uuid]),
+    },
+  };
 }
 
 export function loadConfig(iniPath: string): NodemcuConfig {

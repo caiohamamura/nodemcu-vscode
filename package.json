@@ -27,7 +27,6 @@
     "workspaceContains:nodemcu.ini",
     "onStartupFinished",
     "onView:nodemcu.deviceExplorer",
-    "onView:nodemcu.deviceFiles",
     "onView:nodemcu.projectTasks",
     "onView:nodemcu.luaModules",
     "onView:nodemcu.cModules",
@@ -38,9 +37,6 @@
     "onCommand:nodemcu-vscode.uploadFile",
     "onCommand:nodemcu-vscode.uploadChanges",
     "onCommand:nodemcu-vscode.uploadAndMonitor",
-    "onCommand:nodemcu-vscode.downloadFile",
-    "onCommand:nodemcu-vscode.openLiveDeviceFile",
-    "onCommand:nodemcu-vscode.deleteFile",
     "onCommand:nodemcu-vscode.runFile",
     "onCommand:nodemcu-vscode.resetDevice",
     "onCommand:nodemcu-vscode.refreshExplorer",
@@ -67,26 +63,25 @@
         {
           "id": "nodemcu.deviceExplorer",
           "name": "Device Explorer",
-          "contextualTitle": "NodeMCU Device Explorer"
-        },
-        {
-          "id": "nodemcu.deviceFiles",
-          "name": "Device Files",
-          "contextualTitle": "NodeMCU Device Files"
+          "contextualTitle": "NodeMCU Device Explorer",
+          "when": "nodemcu.projectValid"
         },
         {
           "id": "nodemcu.projectTasks",
-          "name": "Project Tasks"
+          "name": "NodeMCU",
+          "when": "!nodemcu.projectValid"
         },
         {
           "id": "nodemcu.luaModules",
           "name": "Lua Modules",
-          "contextualTitle": "NodeMCU Lua Modules"
+          "contextualTitle": "NodeMCU Lua Modules",
+          "when": "nodemcu.projectValid"
         },
         {
           "id": "nodemcu.cModules",
           "name": "C Modules",
-          "contextualTitle": "NodeMCU C Modules"
+          "contextualTitle": "NodeMCU C Modules",
+          "when": "nodemcu.projectValid"
         }
       ]
     },
@@ -124,21 +119,6 @@
       {
         "command": "nodemcu-vscode.uploadAndMonitor",
         "title": "Upload and Monitor",
-        "category": "NodeMCU"
-      },
-      {
-        "command": "nodemcu-vscode.downloadFile",
-        "title": "Download File from Device",
-        "category": "NodeMCU"
-      },
-      {
-        "command": "nodemcu-vscode.openLiveDeviceFile",
-        "title": "Live Edit Device File",
-        "category": "NodeMCU"
-      },
-      {
-        "command": "nodemcu-vscode.deleteFile",
-        "title": "Delete File on Device",
         "category": "NodeMCU"
       },
       {
@@ -195,38 +175,13 @@
     "menus": {
       "view/item/context": [
         {
-          "command": "nodemcu-vscode.uploadFile",
-          "when": "view == nodemcu.luaModules && viewItem == nodemcu.luaModule",
-          "group": "nodemcu"
-        },
-        {
           "command": "nodemcu-vscode.toggleCModule",
           "when": "view == nodemcu.cModules && viewItem == nodemcu.cModule",
           "group": "nodemcu"
         },
         {
-          "command": "nodemcu-vscode.openLiveDeviceFile",
-          "when": "view == nodemcu.deviceFiles && viewItem == nodemcu.deviceFile",
-          "group": "nodemcu@0"
-        },
-        {
-          "command": "nodemcu-vscode.downloadFile",
-          "when": "view == nodemcu.deviceFiles && viewItem == nodemcu.deviceFile",
-          "group": "nodemcu"
-        },
-        {
-          "command": "nodemcu-vscode.deleteFile",
-          "when": "view == nodemcu.deviceFiles && viewItem == nodemcu.deviceFile",
-          "group": "nodemcu"
-        },
-        {
-          "command": "nodemcu-vscode.runFile",
-          "when": "view == nodemcu.deviceFiles && viewItem == nodemcu.deviceFile",
-          "group": "nodemcu"
-        },
-        {
           "command": "nodemcu-vscode.refreshExplorer",
-          "when": "view == nodemcu.deviceExplorer || view == nodemcu.deviceFiles",
+          "when": "view == nodemcu.deviceExplorer",
           "group": "nodemcu"
         }
       ]
@@ -243,16 +198,6 @@
       {
         "command": "nodemcu-vscode.uploadAndMonitor",
         "key": "f5"
-      },
-      {
-        "command": "nodemcu-vscode.deleteFile",
-        "key": "delete",
-        "when": "view == nodemcu.deviceFiles"
-      },
-      {
-        "command": "nodemcu-vscode.deleteFile",
-        "key": "backspace",
-        "when": "view == nodemcu.deviceFiles"
       }
     ],
     "configuration": {

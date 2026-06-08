@@ -1,0 +1,62 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { FileEntry } from "./nodemcuTool";
+
+export interface LocalMirrorFile {
+  localPath: string;
+  remoteName: string;
+}
+
+export interface MirrorPlan {
+  upload: LocalMirrorFile[];
+  remove: string[];
+}
+
+export function getFilesRecursively(dir: string): string[] {
+  let results: string[] = [];
+  if (!fs.existsSync(dir)) return results;
+  const list = fs.readdirSync(dir);
+  for (const file of list) {
+    if (file === "." || file === "..") continue;
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      if (file === ".git" || file === "node_modules" || file === ".vscode" || file === ".tmp-user-dir" || file === ".tmp-extensions") {
+        continue;
+      }
+      results = results.concat(getFilesRecursively(fullPath));
+    } else if (stat.isFile()) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+export function localFilesForSrc(srcDir: string): LocalMirrorFile[] {
+  return getFilesRecursively(srcDir).map((file) => ({
+    localPath: file,
+    remoteName: path.relative(srcDir, file).replace(/\\/g, "/"),
+  }));
+}
+
+export function planMirrorSync(opts: {
+  srcDir: string;
+  remoteFiles: FileEntry[];
+  uploadTimestamps?: Record<string, number>;
+  changedOnly?: boolean;
+}): MirrorPlan {
+  const localFiles = localFilesForSrc(opts.srcDir);
+  const remoteNames = new Set(localFiles.map((file) => file.remoteName));
+  const upload = opts.changedOnly
+    ? localFiles.filter((file) => {
+        if (!fs.existsSync(file.localPath)) return false;
+        const mtime = fs.statSync(file.localPath).mtimeMs;
+        const lastMtime = opts.uploadTimestamps?.[file.localPath] ?? 0;
+        return mtime > lastMtime;
+      })
+    : localFiles;
+  const remove = opts.remoteFiles
+    .map((file) => file.name)
+    .filter((name) => !remoteNames.has(name));
+  return { upload, remove };
+}

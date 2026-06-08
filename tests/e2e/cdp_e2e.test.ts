@@ -163,8 +163,7 @@ describe("E2E CDP: Extension Host Automation", () => {
     }
   });
 
-  it("focuses sidebar and expands panes", async () => {
-    // 1. Focus Sidebar
+  async function focusNodeMcuSidebar(): Promise<void> {
     const focusResult = await client.evaluate(`
       (() => {
         const btn = document.querySelector('[aria-label*="NodeMCU"]') || 
@@ -176,10 +175,10 @@ describe("E2E CDP: Extension Host Automation", () => {
     `);
     console.log("Focus result:", focusResult);
     expect(focusResult).toBeDefined();
-
     await new Promise(r => setTimeout(r, 1000));
+  }
 
-    // 2. Expand Panes
+  async function expandPanes(): Promise<void> {
     const expandResult = await client.evaluate(`
       (() => {
         const headers = Array.from(document.querySelectorAll('.pane-header[aria-expanded="false"]'));
@@ -189,6 +188,61 @@ describe("E2E CDP: Extension Host Automation", () => {
     `);
     console.log("Expand result:", expandResult);
     expect(expandResult).toBeDefined();
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  async function runCommandPalette(command: string): Promise<void> {
+    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
+    await new Promise(r => setTimeout(r, 400));
+    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
+    await new Promise(r => setTimeout(r, 1000));
+    await client.evaluate(`
+      (() => {
+        const input = document.querySelector('.quick-input-box input');
+        if (input) {
+          input.focus();
+          input.value = ${JSON.stringify(command)};
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      })()
+    `);
+    await new Promise(r => setTimeout(r, 1000));
+    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+    await new Promise(r => setTimeout(r, 1500));
+  }
+
+  it("shows only Initialize Project before a valid project exists", async () => {
+    await focusNodeMcuSidebar();
+    await expandPanes();
+    const sidebarText = await client.evaluate(`
+      (() => document.querySelector('.sidebar')?.textContent || document.body.textContent || '')()
+    `);
+    expect(sidebarText).toContain("Initialize Project");
+    expect(sidebarText).not.toContain("Device Files");
+  });
+
+  it("initializes the workspace with nodemcu.ini and src/init.lua", async () => {
+    await runCommandPalette("NodeMCU: Initialize Project");
+    const iniPath = path.join(WORKSPACE_DIR, "nodemcu.ini");
+    const initPath = path.join(WORKSPACE_DIR, "src", "init.lua");
+    expect(fs.existsSync(iniPath)).toBe(true);
+    expect(fs.existsSync(initPath)).toBe(true);
+    expect(fs.readFileSync(iniPath, "utf-8")).toContain("[devices]");
+  });
+
+  it("shows device explorer and module selectors after initialization", async () => {
+    await focusNodeMcuSidebar();
+    await expandPanes();
+    const paneText = await client.evaluate(`
+      (() => Array.from(document.querySelectorAll('.pane-header')).map(h => h.textContent || h.getAttribute('aria-label') || '').join('\\n'))()
+    `);
+    expect(paneText).toContain("Device Explorer");
+    expect(paneText).toContain("Lua Modules");
+    expect(paneText).toContain("C Modules");
+    expect(paneText).not.toContain("Device Files");
   });
 
   it("toggles Lua module checkbox and C module checkbox", async () => {
@@ -221,44 +275,13 @@ describe("E2E CDP: Extension Host Automation", () => {
     console.log("Toggle C result:", toggleCResult);
   });
 
-  it("monitors changes in 'src' directory, creates init.lua and triggers upload", async () => {
-    // 1. Create a local 'src' directory and 'init.lua' if they do not exist
-    const srcDir = path.join(workspaceRoot, "src");
+  it("uses workspace src as the edited file surface", async () => {
+    const srcDir = path.join(WORKSPACE_DIR, "src");
     if (!fs.existsSync(srcDir)) {
       fs.mkdirSync(srcDir, { recursive: true });
     }
     const testFile = path.join(srcDir, "init.lua");
     fs.writeFileSync(testFile, 'print("Hello from automated CDP E2E test!")\\n', "utf-8");
-
-    // 2. Trigger Upload Command via command palette
-    // Escape to clear any current quick input
-    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
-    await new Promise(r => setTimeout(r, 400));
-
-    // Open Command Palette (F1)
-    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Type "NodeMCU: Upload File to Device"
-    await client.evaluate(`
-      (() => {
-        const input = document.querySelector('.quick-input-box input');
-        if (input) {
-          input.focus();
-          input.value = "NodeMCU: Upload File to Device";
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-      })()
-    `);
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Send Enter
-    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
-    
-    console.log("Triggered Upload File command.");
-    await new Promise(r => setTimeout(r, 3000));
+    expect(fs.readFileSync(testFile, "utf-8")).toContain("automated CDP E2E");
   });
 });

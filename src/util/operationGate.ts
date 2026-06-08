@@ -31,10 +31,14 @@ export class OperationGate {
   private async start<T>(name: string, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const previous = this.active;
     if (previous) {
-      await this.hooks.onInterrupt(previous.name);
+      const timeoutMs = this.options.interruptTimeoutMs ?? 3000;
+      await Promise.race([
+        this.hooks.onInterrupt(previous.name),
+        delay(timeoutMs),
+      ]).catch(() => undefined);
       await Promise.race([
         previous.done,
-        delay(this.options.interruptTimeoutMs ?? 3000),
+        delay(timeoutMs),
       ]).catch(() => undefined);
     }
 

@@ -7,6 +7,7 @@ import { writeUserModulesHeader } from "../../src/build/userModulesWriter";
 import { FlashManager } from "../../src/flash/flashManager";
 import { NodemcuTool } from "../../src/upload/nodemcuTool";
 import { defaultConfig } from "../../src/config/nodemcuIni";
+import { readDeviceIdentity } from "../../src/device/deviceIdentity";
 import { Shell, type ShellRunOptions, type ShellRunResult } from "../../src/util/shell";
 
 class FakeShell extends Shell {
@@ -279,5 +280,49 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     expect(files[0].name).toBe("init.lua");
     expect(files[0].size).toBe(234);
     expect(files[1].size).toBe(100);
+  });
+
+  it("listFilesResult reports nodemcu-tool fsinfo failures", async () => {
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 1, stderr: "Cannot open port COM7" });
+    const t = new NodemcuTool(shell as unknown as Shell);
+    const result = await t.listFilesResult(
+      { python: "python", port: "COM7", baud: 115200, baudUpload: 460800, compile: false },
+      () => { },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Cannot open port COM7");
+  });
+});
+
+describe("Device identity (integration, mocked shell)", () => {
+  it("reads the MAC address through esptool", async () => {
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 0, stdout: "MAC: aa:bb:cc:dd:ee:ff\n" });
+    const result = await readDeviceIdentity({
+      shell: shell as unknown as Shell,
+      python: "python",
+      port: "COM42",
+      baud: 115200,
+    });
+    expect(result.success).toBe(true);
+    expect(result.identity?.uuid).toBe("aabbccddeeff");
+    expect(shell.calls[0]).toEqual({
+      command: "python",
+      args: ["-m", "esptool", "--port", "COM42", "--baud", "115200", "read-mac"],
+    });
+  });
+
+  it("reports a parse failure when esptool output has no MAC address", async () => {
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 0, stdout: "No MAC here\n" });
+    const result = await readDeviceIdentity({
+      shell: shell as unknown as Shell,
+      python: "python",
+      port: "COM42",
+      baud: 115200,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unable to parse");
   });
 });
