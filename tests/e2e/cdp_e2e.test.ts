@@ -149,10 +149,17 @@ describe("E2E CDP: Extension Host Automation", () => {
 
   afterAll(() => {
     if (client) {
+      try {
+        client.send("Browser.close").catch(() => {});
+      } catch { /* ignore */ }
       client.close();
     }
     if (codeProcess) {
-      codeProcess.kill();
+      if (process.platform === "win32" && codeProcess.pid) {
+        child_process.spawnSync("taskkill", ["/pid", codeProcess.pid.toString(), "/f", "/t"]);
+      } else {
+        codeProcess.kill();
+      }
     }
   });
 

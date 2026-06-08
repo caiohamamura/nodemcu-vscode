@@ -1,4 +1,4 @@
-import { Shell } from "../util/shell";
+import { Shell, type ShellRunOptions, type ShellRunResult } from "../util/shell";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -38,7 +38,7 @@ export class NodemcuTool {
       args: [
         ...cmd.argsPrefix,
         "--port", opts.port,
-        "--baud", String(opts.baudUpload || opts.baud),
+        "--baud", String(opts.baud),
         "--connection-delay", "1000",
         ...commandArgs,
       ],
@@ -56,12 +56,28 @@ export class NodemcuTool {
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
-  private async runWithDelay(command: string, args: string[], options?: any): Promise<any> {
-    const r = await this.shell.run(command, args, options);
-    if (process.platform === "win32") {
-      await new Promise(resolve => setTimeout(resolve, 1500));
+  private async runWithDelay(command: string, args: string[], options: ShellRunOptions = {}, timeoutMs = 30_000): Promise<ShellRunResult> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    controller.signal.addEventListener("abort", () => {
+      timedOut = true;
+    });
+    try {
+      const r = await this.shell.run(command, args, { ...options, signal: options.signal ?? controller.signal });
+      if (process.platform === "win32") {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+      return r;
+    } catch (error) {
+      if (process.platform === "win32") {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+      const message = timedOut ? `Command timed out after ${timeoutMs}ms` : error instanceof Error ? error.message : String(error);
+      return { exitCode: null, signal: timedOut ? "SIGTERM" : null, stdout: "", stderr: message };
+    } finally {
+      clearTimeout(timer);
     }
-    return r;
   }
 
   async upload(opts: NodemcuToolOptions, localPath: string, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
@@ -72,7 +88,7 @@ export class NodemcuTool {
       "--remotename", remoteName,
       localPath,
     ]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog }, 20_000);
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
@@ -101,13 +117,13 @@ export class NodemcuTool {
 
   async reset(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, ["reset"]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog }, 8_000);
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async mkfs(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, ["mkfs", "--noninteractive"]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog }, 45_000);
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
@@ -123,9 +139,9 @@ export class NodemcuTool {
     }
     return r.stdout
       .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0)
-      .map((line) => {
+      .map((l: string) => l.trim())
+      .filter((l: string) => l.length > 0)
+      .map((line: string) => {
         const parts = line.split(/\s+/);
         const size = Number(parts[parts.length - 1]);
         const name = parts.slice(0, -1).join(" ");

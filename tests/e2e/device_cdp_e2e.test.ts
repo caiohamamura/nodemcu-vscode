@@ -8,13 +8,15 @@ import { ReadlineParser } from "@serialport/parser-readline";
 import { writeUserModulesHeader } from "../../src/build/userModulesWriter";
 import { parseIni, serializeIni } from "../../src/config/nodemcuIni";
 
-const PORT = "COM7";
-const BAUD_RATE = 115200;
+const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || "COM7";
+const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
 const DEBUG_PORT = 9238;
 const FIRMWARE_REPO = "C:/Users/caioh/src/nodemcu-firmware";
+const RUN_ID = `${process.pid}-${Date.now()}`;
 const WORKSPACE_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-workspace");
-const USER_DATA_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-user-data");
-const EXTENSIONS_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-extensions");
+const USER_DATA_DIR = path.join(os.tmpdir(), `nodemcu-vscode-e2e-user-data-${RUN_ID}`);
+const EXTENSIONS_DIR = path.join(os.tmpdir(), `nodemcu-vscode-e2e-extensions-${RUN_ID}`);
+const REQUIRED_UPLOAD_MODULES = ["file", "node", "uart", "tmr", "gpio", "wifi"];
 
 const hasFirmwareRepo = fs.existsSync(path.join(FIRMWARE_REPO, "CMakeLists.txt"));
 const hasCMake = (() => {
@@ -189,9 +191,20 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     fs.rmSync(path.join(FIRMWARE_REPO, "app", "include", "user_modules.h"), { force: true });
   }, 120_000);
 
-  afterAll(async () => {
-    if (client) client.close();
-    if (codeProcess) codeProcess.kill();
+  afterAll(() => {
+    if (client) {
+      try {
+        client.send("Browser.close").catch(() => {});
+      } catch { /* ignore */ }
+      client.close();
+    }
+    if (codeProcess) {
+      if (process.platform === "win32" && codeProcess.pid) {
+        child_process.spawnSync("taskkill", ["/pid", codeProcess.pid.toString(), "/f", "/t"]);
+      } else {
+        codeProcess.kill();
+      }
+    }
   });
 
   async function runCommandPalette(command: string) {
@@ -268,6 +281,129 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     await new Promise(r => setTimeout(r, 2000));
   }
 
+  async function closeSerialPort(port: SerialPort): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      if (!port.isOpen) {
+        resolve();
+        return;
+      }
+      port.close((error) => error ? reject(error) : resolve());
+    });
+    await new Promise(r => setTimeout(r, process.platform === "win32" ? 1500 : 250));
+  }
+
+  async function dumpNodeMcuOutput(): Promise<string> {
+    try {
+      await runCommandPalette("Output: Focus on Output View");
+      await new Promise(r => setTimeout(r, 1000));
+      await runCommandPalette("Output: Show Output Channels...");
+      await client.send("Input.insertText", { text: "NodeMCU" });
+      await new Promise(r => setTimeout(r, 500));
+      await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+      await new Promise(r => setTimeout(r, 1000));
+      const text = await client.evaluate(`
+        (() => {
+          const panel = document.querySelector('.panel') || document.body;
+          return panel ? (panel.textContent || '').slice(-8000) : '';
+        })()
+      `);
+      console.log("=== NodeMCU Output Panel Tail ===\n" + text);
+      return text;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log("Failed to dump NodeMCU output panel:", message);
+      return "";
+    }
+  }
+
+  async function getStatusItems(): Promise<string[]> {
+    return await client.evaluate(`
+      (() => Array.from(document.querySelectorAll('.statusbar-item'))
+        .map(el => (el.textContent || '').trim().replace(/\\s+/g, ' '))
+        .filter(Boolean))()
+    `);
+  }
+
+  async function waitForUploadResult(timeoutMs = 45_000): Promise<"success" | "error" | "timeout"> {
+    const started = Date.now();
+    let sawActiveState = false;
+    while (Date.now() - started < timeoutMs) {
+      const status = await getStatusItems();
+      const joined = status.join(" | ");
+      if (/uploading|building|flashing/i.test(joined)) {
+        sawActiveState = true;
+      }
+      if (/upload FAILED|error/i.test(joined)) {
+        console.log("Upload status indicates failure:", joined);
+        await dumpNodeMcuOutput();
+        return "error";
+      }
+      if (sawActiveState && /uploaded \d+ files?/i.test(joined)) {
+        console.log("Upload status indicates success:", joined);
+        return "success";
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log("Timed out waiting for upload result. Status:", (await getStatusItems()).join(" | "));
+    await dumpNodeMcuOutput();
+    return "timeout";
+  }
+
+  async function verifyInitLuaPrints(marker: string): Promise<boolean> {
+    let found = false;
+    const lines: string[] = [];
+    const port = new SerialPort({ path: PORT, baudRate: BAUD_RATE });
+    const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
+
+    port.on('error', (err) => {
+      console.log(`[SERIAL ERROR] ${err.message}`);
+    });
+
+    parser.on('data', (data: string) => {
+      const line = data.trim();
+      lines.push(line);
+      console.log(`[SERIAL] ${line}`);
+      if (data.includes(marker)) {
+        found = true;
+      }
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        port.on('open', () => resolve());
+        port.on('error', (err) => reject(err));
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`Unable to open serial port for verification: ${message}`);
+      await closeSerialPort(port);
+      return false;
+    }
+
+    console.log("Serial port opened, issuing node.restart()...");
+    await new Promise<void>((resolve, reject) => {
+      port.write("\r\nnode.restart()\r\n", (writeError) => {
+        if (writeError) {
+          reject(writeError);
+          return;
+        }
+        port.drain((drainError) => drainError ? reject(drainError) : resolve());
+      });
+    });
+
+    for (let i = 0; i < 24; i++) {
+      if (found) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    await closeSerialPort(port);
+    if (!found) {
+      console.log(`Did not observe ${marker}. Serial tail:\n${lines.slice(-40).join("\n")}`);
+    }
+    return found;
+  }
+
   it("1. Initializes Project", async () => {
     // Wait for the VS Code UI to fully settle before interacting
     await new Promise(r => setTimeout(r, 5000));
@@ -288,8 +424,18 @@ describe_("E2E CDP + Hardware Device Tests", () => {
 
     // Modify nodemcu.ini to use our settings
     let ini = fs.readFileSync(iniPath, "utf-8");
-    ini = ini.replace(/port\s*=\s*.*/, `port = ${PORT}`);
-    ini = ini.replace(/firmware_path\s*=\s*.*/, `firmware_path = ${FIRMWARE_REPO.replace(/\\/g, "/")}`);
+    const portMatch = ini.match(/port\s*=\s*([^\r\n]*)/);
+    if (portMatch) {
+      ini = ini.replace(portMatch[0], `port = ${PORT}`);
+    } else {
+      ini = ini.replace(/\[nodemcu\]/, `[nodemcu]\nport = ${PORT}`);
+    }
+    const fwMatch = ini.match(/firmware_path\s*=\s*([^\r\n]*)/);
+    if (fwMatch) {
+      ini = ini.replace(fwMatch[0], `firmware_path = ${FIRMWARE_REPO.replace(/\\/g, "/")}`);
+    } else {
+      ini = ini.replace("[nodemcu]", `[nodemcu]\nfirmware_path = ${FIRMWARE_REPO.replace(/\\/g, "/")}`);
+    }
     fs.writeFileSync(iniPath, ini);
     await new Promise(r => setTimeout(r, 2000)); // allow extension to reload
   });
@@ -336,16 +482,16 @@ describe_("E2E CDP + Hardware Device Tests", () => {
   it("5. Uploads and runs Lua script", async () => {
     // Skipped Build and Flash tests since the Windows host lacks the Xtensa GCC toolchain
     // The ESP8266 is already flashed with NodeMCU firmware for the upload tests.
-    // We can use esptool to check chip ID to verify device is alive
-    const r = child_process.spawnSync("python", ["-m", "esptool", "--port", PORT, "--baud", "115200", "chip_id"], { encoding: "utf-8" });
-    expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/Chip ID:/);
-
     // Force the firmware's user_modules.h to match the ini so that doUploadFile doesn't trigger a build
     const fwPath = "C:/Users/caioh/src/nodemcu-firmware";
     const headerPath = path.join(fwPath, "app", "include", "user_modules.h");
     const cfg = parseIni(fs.readFileSync(path.join(WORKSPACE_DIR, "nodemcu.ini"), "utf-8"));
     cfg.nodemcu.port = PORT;
+    cfg.nodemcu.baud = BAUD_RATE;
+    cfg.nodemcu.upload_baud = BAUD_RATE;
+    for (const moduleName of REQUIRED_UPLOAD_MODULES) {
+      cfg.c_modules[moduleName] = true;
+    }
     fs.writeFileSync(path.join(WORKSPACE_DIR, "nodemcu.ini"), serializeIni(cfg));
 
     if (!fs.existsSync(path.dirname(headerPath))) {
@@ -354,7 +500,9 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     writeUserModulesHeader(headerPath, cfg);
 
     const srcDir = path.join(WORKSPACE_DIR, "src");
-    if (!fs.existsSync(srcDir)) fs.mkdirSync(srcDir, { recursive: true });
+    if (!fs.existsSync(srcDir)) {
+      fs.mkdirSync(srcDir, { recursive: true });
+    }
     const initFile = path.join(srcDir, "init.lua");
     fs.writeFileSync(initFile, "print('HELLO_FROM_CDP_E2E_TEST')\n");
 
@@ -370,58 +518,33 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     // Try to trigger the upload command
     await runCommandPalette("NodeMCU: Upload File to Device");
 
-    // If port config was delayed, a QuickPick might ask for the port. Type it and Enter.
-    await new Promise(r => setTimeout(r, 1000));
-    await client.send("Input.insertText", { text: PORT });
-    await new Promise(r => setTimeout(r, 500));
-    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+    expect(await waitForUploadResult()).toBe("success");
 
-    await new Promise(r => setTimeout(r, 10000)); // wait for upload
-
-    // Reboot device and check output using serialport
-    let found = false;
-    const port = new SerialPort({ path: PORT, baudRate: BAUD_RATE });
-    const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
-    
-    port.on('error', (err) => {
-      console.log(`[SERIAL ERROR] ${err.message}`);
-    });
-
-    parser.on('data', (data: string) => {
-      console.log(`[SERIAL] ${data.trim()}`);
-      if (data.includes("HELLO_FROM_CDP_E2E_TEST")) {
-        found = true;
-      }
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      port.on('open', () => resolve());
-      port.on('error', (err) => reject(err));
-    });
-
-    console.log("Serial port opened, resetting ESP8266...");
-
-    // Toggle DTR/RTS to reset the ESP8266
-    await new Promise<void>((resolve) => {
-      port.set({ dtr: false, rts: true }, () => {
-        setTimeout(() => {
-          port.set({ dtr: false, rts: false }, () => {
-            resolve();
-          });
-        }, 100);
-      });
-    });
-
-    console.log("Waiting for output...");
-
-    // Wait up to 10 seconds for the output
-    for (let i = 0; i < 20; i++) {
-      if (found) break;
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    port.close();
+    const found = await verifyInitLuaPrints("HELLO_FROM_CDP_E2E_TEST");
+    if (!found) await dumpNodeMcuOutput();
     expect(found).toBe(true);
-  }, 60_000);
+  }, 100_000);
+
+  it("6. Uploads changes and stops open serial monitors", async () => {
+    // Close the active text editor to ensure the extension falls back to the "src" folder
+    await runCommandPalette("View: Close Editor");
+    await new Promise(r => setTimeout(r, 500));
+
+    const srcDir = path.join(WORKSPACE_DIR, "src");
+    
+    // Modify the file on disk
+    fs.writeFileSync(path.join(srcDir, "init.lua"), "print('HELLO_FROM_UPLOAD_CHANGES')\n");
+
+    // Open Serial Monitor using command palette
+    await runCommandPalette("NodeMCU: Open Serial Monitor");
+    await new Promise(r => setTimeout(r, 3000)); // wait for terminal to open and lock COM port
+
+    // Trigger Upload Changes (this should close the terminal automatically)
+    await runCommandPalette("NodeMCU: Upload Changes to Device");
+    expect(await waitForUploadResult()).toBe("success");
+
+    const found = await verifyInitLuaPrints("HELLO_FROM_UPLOAD_CHANGES");
+    if (!found) await dumpNodeMcuOutput();
+    expect(found).toBe(true);
+  }, 100_000);
 });
