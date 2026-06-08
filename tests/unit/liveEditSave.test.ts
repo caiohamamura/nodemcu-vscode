@@ -19,7 +19,7 @@
  *      save is in progress interrupts the save and lets the command proceed.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { OperationGate } from "../../src/util/operationGate";
 
 // ---------------------------------------------------------------------------
@@ -30,26 +30,6 @@ interface FakeDoc {
   content: string;
   remoteName: string;
   port: string;
-}
-
-/**
- * Simulates the extension's uploadLiveDocument() function.
- * Resolves immediately unless a `stallMs` is given, in which case it waits
- * that many ms before resolving (to simulate a slow upload so the test can
- * interrupt it).
- */
-function makeUploadFn(
-  calls: Array<{ content: string; remoteName: string; signal: AbortSignal }>,
-  stallMs = 0,
-) {
-  return async (doc: FakeDoc, signal: AbortSignal): Promise<void> => {
-    calls.push({ content: doc.content, remoteName: doc.remoteName, signal });
-    if (stallMs > 0) {
-      await new Promise<void>((resolve) => setTimeout(resolve, stallMs));
-    }
-    // Honour the abort signal: exit silently if aborted (as uploadWithFallback does)
-    if (signal.aborted) return;
-  };
 }
 
 /** Builds a gate identical to the one in extension.ts activate(). */

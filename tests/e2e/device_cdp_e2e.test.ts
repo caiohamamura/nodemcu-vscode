@@ -10,8 +10,8 @@ import { parseIni, serializeIni } from "../../src/config/nodemcuIni";
 
 const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || "COM7";
 const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
-const DEBUG_PORT = 9238;
-const FIRMWARE_REPO = "C:/Users/caioh/src/nodemcu-firmware";
+const DEBUG_PORT = Number(process.env.NODEMCU_VSCODE_E2E_CDP_PORT || "9238");
+const FIRMWARE_REPO = process.env.NODEMCU_VSCODE_E2E_FIRMWARE_REPO || "C:/Users/caioh/src/nodemcu-firmware";
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const WORKSPACE_DIR = path.join(os.tmpdir(), "nodemcu-vscode-e2e-workspace");
 const USER_DATA_DIR = path.join(os.tmpdir(), `nodemcu-vscode-e2e-user-data-${RUN_ID}`);
@@ -37,6 +37,10 @@ const hasEsptool = (() => {
 })();
 
 const describe_ = hasFirmwareRepo && hasCMake && hasEsptool ? describe : describe.skip;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
 
 async function getDebuggerUrl() {
   for (let i = 0; i < 60; i++) {
@@ -281,6 +285,224 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     await new Promise(r => setTimeout(r, 2000));
   }
 
+  function jsString(value: string): string {
+    return JSON.stringify(value);
+  }
+
+  function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  async function pressKey(key: string, code: string, windowsVirtualKeyCode: number, modifiers = 0): Promise<void> {
+    await client.send("Input.dispatchKeyEvent", { type: "keyDown", windowsVirtualKeyCode, key, code, modifiers });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode, key, code, modifiers });
+  }
+
+  async function pressModifiedKey(key: string, code: string, windowsVirtualKeyCode: number): Promise<void> {
+    const modifier = process.platform === "darwin" ? 4 : 2;
+    await pressKey(key, code, windowsVirtualKeyCode, modifier);
+  }
+
+  async function clickAt(x: number, y: number): Promise<void> {
+    await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+    await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  }
+
+  async function focusNodeMcuSidebar(): Promise<void> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const button = await client.evaluate(`
+        (() => {
+          const items = Array.from(document.querySelectorAll('.activitybar .action-item, .activitybar [aria-label], .activitybar [title]'));
+          const match = items
+            .map(e => ({
+              label: e.getAttribute('title') || e.getAttribute('aria-label') || '',
+              rect: (() => { const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height }; })()
+            }))
+            .find(e => e.label.includes('NodeMCU') && e.rect.w > 0 && e.rect.h > 0);
+          return match || null;
+        })()
+      `) as { label: string; rect: { x: number; y: number; w: number; h: number } } | null;
+      if (!button) throw new Error("NodeMCU activity bar item was not found");
+      await clickAt(button.rect.x, button.rect.y);
+      await sleep(1000);
+      const visible = await client.evaluate(`
+        (() => Array.from(document.querySelectorAll('.pane-header'))
+          .some(h => (h.getAttribute('aria-label') || '').includes('Device Files')))()
+      `);
+      if (visible) return;
+    }
+    throw new Error("NodeMCU sidebar did not show the Device Files pane");
+  }
+
+  async function expandSidebarPanes(): Promise<void> {
+    await client.evaluate(`
+      (() => {
+        const headers = Array.from(document.querySelectorAll('.pane-header[aria-expanded="false"]'));
+        headers.forEach(h => h.click());
+      })()
+    `);
+    await sleep(1000);
+  }
+
+  async function waitForStatusText(pattern: RegExp, timeoutMs = 45_000): Promise<string> {
+    const started = Date.now();
+    let last = "";
+    while (Date.now() - started < timeoutMs) {
+      last = (await getStatusItems()).join(" | ");
+      if (pattern.test(last)) return last;
+      await sleep(500);
+    }
+    throw new Error(`Timed out waiting for status ${pattern}. Last status: ${last}`);
+  }
+
+  async function waitForDeviceFileRow(remoteName: string, timeoutMs = 45_000): Promise<{ x: number; y: number; text: string }> {
+    const started = Date.now();
+    let lastPaneState = "";
+    while (Date.now() - started < timeoutMs) {
+      const row = await client.evaluate(`
+        (() => {
+          const remoteName = ${jsString(remoteName)};
+          const panes = Array.from(document.querySelectorAll('.pane'));
+          const paneState = panes.map(p => {
+            const title = (p.querySelector('.pane-header')?.getAttribute('aria-label') || p.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+            const rows = Array.from(p.querySelectorAll('.monaco-list-row')).map(r => (r.textContent || '').trim().replace(/\\s+/g, ' '));
+            return title + ': [' + rows.join(' | ') + ']';
+          }).join(' || ');
+          const pane = panes.find(p => (p.querySelector('.pane-header')?.getAttribute('aria-label') || '').includes('Device Files'));
+          const rows = pane ? Array.from(pane.querySelectorAll('.monaco-list-row')) : [];
+          const row = rows.find(r => ((r.textContent || '').trim()).includes(remoteName));
+          if (!row) return { paneState };
+          row.scrollIntoView({ block: 'center' });
+          const rect = row.getBoundingClientRect();
+          return {
+            x: rect.left + Math.min(48, Math.max(12, rect.width / 3)),
+            y: rect.top + rect.height / 2,
+            text: (row.textContent || '').trim().replace(/\\s+/g, ' '),
+            paneState
+          };
+        })()
+      `) as { x?: number; y?: number; text?: string; paneState?: string } | null;
+      if (row?.paneState) lastPaneState = row.paneState;
+      if (row?.x !== undefined && row.y !== undefined && row.text) return { x: row.x, y: row.y, text: row.text };
+      await sleep(1000);
+    }
+    throw new Error(`Device Files row not found for ${remoteName}. Last panes: ${lastPaneState}`);
+  }
+
+  async function openDeviceFileFromSidebar(remoteName: string): Promise<void> {
+    await focusNodeMcuSidebar();
+    await expandSidebarPanes();
+    await runCommandPalette("NodeMCU: Refresh Device Explorer");
+    await focusNodeMcuSidebar();
+    await expandSidebarPanes();
+    await pressKey("Escape", "Escape", 27);
+    await sleep(500);
+    const row = await waitForDeviceFileRow(remoteName);
+    console.log(`Clicking Device Files row: ${row.text}`);
+    await clickAt(row.x, row.y);
+    await waitForStatusText(new RegExp(`opened\\s+${escapeRegExp(remoteName)}`, "i"), 60_000);
+  }
+
+  async function getActiveEditorSummary(): Promise<{ tab: string; aria: string; text: string }> {
+    return await client.evaluate(`
+      (() => {
+        const activeTab = document.querySelector('.tab.active') || document.querySelector('.tab[aria-selected="true"]');
+        const activeGroup = Array.from(document.querySelectorAll('.editor-group-container')).find(g => g.classList.contains('active')) ||
+          document.querySelector('.editor-group-container');
+        const root = activeGroup || document;
+        const editor = root.querySelector('.monaco-editor') || document.querySelector('.monaco-editor');
+        const lines = editor ? Array.from(editor.querySelectorAll('.view-lines .view-line')) : [];
+        return {
+          tab: activeTab ? (activeTab.textContent || '').trim().replace(/\\s+/g, ' ') : '',
+          aria: activeTab ? (activeTab.getAttribute('aria-label') || activeTab.getAttribute('title') || '') : '',
+          text: lines.map(l => (l.textContent || '').replace(/\u00a0/g, ' ')).join('\\n')
+        };
+      })()
+    `);
+  }
+
+  async function waitForActiveEditor(remoteName: string, expectedText: string, timeoutMs = 45_000): Promise<{ tab: string; aria: string; text: string }> {
+    const started = Date.now();
+    let last = { tab: "", aria: "", text: "" };
+    while (Date.now() - started < timeoutMs) {
+      last = await getActiveEditorSummary();
+      if ((last.tab.includes(remoteName) || last.aria.includes(remoteName)) && last.text.includes(expectedText)) {
+        return last;
+      }
+      await sleep(500);
+    }
+    throw new Error(`Timed out waiting for live editor ${remoteName}. Last editor: ${JSON.stringify(last)}`);
+  }
+
+  async function focusActiveEditor(): Promise<void> {
+    const target = await client.evaluate(`
+      (() => {
+        const activeGroup = Array.from(document.querySelectorAll('.editor-group-container')).find(g => g.classList.contains('active')) ||
+          document.querySelector('.editor-group-container');
+        const root = activeGroup || document;
+        const editor = root.querySelector('.monaco-editor') || document.querySelector('.monaco-editor');
+        const input = root.querySelector('.monaco-editor textarea.inputarea') ||
+          root.querySelector('.monaco-editor textarea') ||
+          document.querySelector('.monaco-editor textarea.inputarea') ||
+          document.querySelector('.monaco-editor textarea');
+        const editorSurface = editor?.querySelector('.view-lines') || editor;
+        if (!editorSurface) {
+          if (input) {
+            input.focus();
+            return { focused: true };
+          }
+          return { focused: false };
+        }
+        const rect = editorSurface.getBoundingClientRect();
+        return {
+          focused: false,
+          x: rect.left + Math.min(80, Math.max(20, rect.width / 4)),
+          y: rect.top + Math.min(24, Math.max(12, rect.height / 3))
+        };
+      })()
+    `) as { focused: boolean; x?: number; y?: number };
+    if (target.x !== undefined && target.y !== undefined) {
+      await clickAt(target.x, target.y);
+      await sleep(250);
+      return;
+    }
+    if (target.focused) {
+      await sleep(250);
+      return;
+    }
+    throw new Error("Unable to focus the active editor input");
+  }
+
+  async function replaceActiveEditorText(text: string): Promise<void> {
+    await focusActiveEditor();
+    await pressModifiedKey("a", "KeyA", 65);
+    await sleep(150);
+    await client.send("Input.insertText", { text });
+    await sleep(250);
+  }
+
+  async function saveActiveEditor(): Promise<void> {
+    await focusActiveEditor();
+    await pressModifiedKey("s", "KeyS", 83);
+    await sleep(150);
+  }
+
+  async function waitForLiveSaveResult(remoteName: string, timeoutMs = 70_000): Promise<"success" | "error" | "timeout"> {
+    const started = Date.now();
+    let lastErrorStatus = "";
+    const savedPattern = new RegExp(`saved\\s+${escapeRegExp(remoteName)}`, "i");
+    while (Date.now() - started < timeoutMs) {
+      const joined = (await getStatusItems()).join(" | ");
+      if (savedPattern.test(joined)) return "success";
+      if (/save FAILED|upload FAILED|error/i.test(joined)) lastErrorStatus = joined;
+      await sleep(500);
+    }
+    console.log(`Timed out waiting for live save result. Last error status: ${lastErrorStatus}`);
+    await dumpNodeMcuOutput();
+    return lastErrorStatus ? "error" : "timeout";
+  }
+
   async function closeSerialPort(port: SerialPort): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       if (!port.isOpen) {
@@ -402,6 +624,52 @@ describe_("E2E CDP + Hardware Device Tests", () => {
       console.log(`Did not observe ${marker}. Serial tail:\n${lines.slice(-40).join("\n")}`);
     }
     return found;
+  }
+
+  async function captureRestartOutputLines(timeoutMs = 14_000): Promise<string[]> {
+    const chunks: string[] = [];
+    let port: SerialPort | undefined;
+
+    const openPort = async (): Promise<SerialPort> => {
+      const started = Date.now();
+      let lastError = "";
+      while (Date.now() - started < 20_000) {
+        const candidate = new SerialPort({ path: PORT, baudRate: BAUD_RATE, autoOpen: false });
+        candidate.on('error', (err) => {
+          console.log(`[SERIAL ERROR] ${err.message}`);
+        });
+        candidate.on('data', (data: Buffer) => {
+          const text = data.toString("utf-8");
+          chunks.push(text);
+          for (const line of text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+            console.log(`[SERIAL] ${line}`);
+          }
+        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            candidate.open((error) => error ? reject(error) : resolve());
+          });
+          return candidate;
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          await closeSerialPort(candidate).catch(() => undefined);
+          await sleep(1000);
+        }
+      }
+      throw new Error(lastError || `Unable to open ${PORT}`);
+    };
+
+    port = await openPort();
+
+    try {
+      await new Promise<void>((resolve, reject) => port.set({ dtr: false, rts: true }, (error) => error ? reject(error) : resolve()));
+      await sleep(100);
+      await new Promise<void>((resolve, reject) => port.set({ dtr: false, rts: false }, (error) => error ? reject(error) : resolve()));
+      await sleep(timeoutMs);
+      return chunks.join("").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    } finally {
+      if (port) await closeSerialPort(port);
+    }
   }
 
   it("1. Initializes Project", async () => {
@@ -547,4 +815,36 @@ describe_("E2E CDP + Hardware Device Tests", () => {
     if (!found) await dumpNodeMcuOutput();
     expect(found).toBe(true);
   }, 100_000);
+
+  it("7. Opens init.lua from Device Files and saves rapid live edits to the device", async () => {
+    await openDeviceFileFromSidebar("init.lua");
+
+    const opened = await waitForActiveEditor("init.lua", "HELLO_FROM_UPLOAD_CHANGES");
+    expect(opened.tab.includes("init.lua") || opened.aria.includes("init.lua")).toBe(true);
+    expect(opened.text).toContain("HELLO_FROM_UPLOAD_CHANGES");
+
+    await replaceActiveEditorText('print("Hello world")\n');
+    let editor = await getActiveEditorSummary();
+    expect(editor.text).toContain("Hello world");
+
+    await saveActiveEditor();
+    await waitForStatusText(/saving\s+init\.lua/i, 15_000);
+
+    await replaceActiveEditorText('print("Hello world!")\n');
+    editor = await getActiveEditorSummary();
+    expect(editor.text).toContain("Hello world!");
+
+    await saveActiveEditor();
+    expect(await waitForLiveSaveResult("init.lua")).toBe("success");
+
+    await sleep(process.platform === "win32" ? 3500 : 1000);
+    const lines = await captureRestartOutputLines();
+    const normalizedLines = lines.map((line) => line.replace(/^>\s*/, "").trim());
+    if (!normalizedLines.includes("Hello world!")) {
+      await dumpNodeMcuOutput();
+      console.log(`Serial restart output:\n${normalizedLines.join("\n")}`);
+    }
+    expect(normalizedLines).toContain("Hello world!");
+    expect(normalizedLines).not.toContain("Hello world");
+  }, 120_000);
 });

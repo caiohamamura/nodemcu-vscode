@@ -123,6 +123,11 @@ VS Code re-uses the same `__default__profile__` memento key.
 - For this repository, always prefer a fresh Extension Development Host started
   from the rebuilt workspace, with its own `--user-data-dir` and
   `--extensions-dir`, so CDP actions are not pointed at a stale renderer.
+- Before adding or running a full Vitest e2e for a new UI path, first prove the
+  path interactively against one running EDH with small CDP probes. Query the
+  DOM, click one thing, inspect state, and only then encode the selectors into
+  the test. This is much faster than discovering selector bugs through a
+  multi-minute hardware suite.
 - On Windows, launch VS Code through the `bin/code.cmd` CLI wrapper when
   possible; it is the more reliable path for extension-development-host sessions
   than calling `Code.exe` directly.
@@ -130,6 +135,15 @@ VS Code re-uses the same `__default__profile__` memento key.
   the panes; the sidebar can exist before the extension has actually populated
   its data. Validate both **Device Explorer** (serial ports) and **Device Files**
   (remote files) after the split.
+- In current VS Code builds, NodeMCU view pane titles are reliably exposed on
+  `.pane-header` as `aria-label` values such as `Device Files Section`; do not
+  depend on `.title-label` for pane identification. For Device Files rows, first
+  find the `.pane` whose header `aria-label` contains `Device Files`, then search
+  that pane's `.monaco-list-row` children.
+- To focus the NodeMCU sidebar, find the visible activity-bar item whose
+  `title` or `aria-label` contains `NodeMCU`, get its bounding rect, and click
+  it with `Input.dispatchMouseEvent`; DOM `.click()` and quick-pick view opening
+  can be flaky or can select adjacent results.
 - `NodeMCU: Initialize Project` is the reliable activation point for
   workspace-scoped tests because it creates `nodemcu.ini`, seeds `init.lua`,
   and causes the views to refresh.
@@ -146,6 +160,22 @@ VS Code re-uses the same `__default__profile__` memento key.
 - Device Files rows open live-edit documents. With the fake `nodemcu-tool`,
   seed `NODEMCU_VSCODE_FAKE_NODMCU_TOOL_STATE` with a file, click the row, edit
   the `nodemcu-live:` document, save, and verify the fake state file changes.
+- When editing Monaco editors through CDP, use `Input.dispatchKeyEvent` with
+  `type: "keyDown"` for modified keys such as Ctrl+A / Ctrl+S; `rawKeyDown`
+  did not reliably select text in the active editor. A proven sequence is:
+  click/focus the active editor, send Ctrl+A as `keyDown`/`keyUp`, call
+  `Input.insertText`, then send Ctrl+S as `keyDown`/`keyUp`.
+- For rapid live-save tests, do not issue the second edit immediately after the
+  first Ctrl+S. Wait until the status bar shows `saving init.lua...`, then make
+  the second edit and save. That proves interruption of an active upload without
+  racing VS Code's document-save event plumbing.
+- The integrated Terminal / serial monitor is canvas-rendered. DOM
+  `.textContent` and the CDP accessibility tree expose the terminal widget and
+  title, but not the serial byte stream. For hardware assertions that need the
+  device's printed output, use a direct `serialport` read after the UI save path
+  completes. A DTR/RTS reset (`dtr: false, rts: true`, wait ~100ms, then
+  `dtr: false, rts: false`) reliably produces the NodeMCU boot banner and
+  `init.lua` print at 115200 baud.
 - `NodeMCU: Upload and Monitor` is the F5 workflow: run it from the command
   palette or dispatch F5, then verify changed files upload, Lua modules sync,
   and a `NodeMCU: <port>` terminal opens.

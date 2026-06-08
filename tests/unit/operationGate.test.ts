@@ -110,7 +110,7 @@ describe("OperationGate", () => {
     );
 
     // A task that never resolves
-    const _stuck = gate.run("Stuck", async () => {
+    void gate.run("Stuck", async () => {
       await new Promise<void>(() => {}); // hangs forever
     });
 

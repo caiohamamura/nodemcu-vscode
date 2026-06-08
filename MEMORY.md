@@ -2,6 +2,45 @@
 
 Last updated: 2026-06-08.
 
+## 2026-06-08 Update: Physical Device Live-Edit E2E
+
+Manual CDP discovery was done before finalizing the automated test:
+
+- Launched a single Extension Development Host on CDP port `9249` with a fresh temp workspace and physical `COM7`.
+- Clicked the NodeMCU activity-bar item by CDP mouse coordinates, then located panes by `.pane-header[aria-label]`.
+- Confirmed the reliable Device Files selector is the pane whose header `aria-label` contains `Device Files`; `.title-label` is unreliable/empty in this VS Code build.
+- Clicked `init.lua` in Device Files and confirmed it opened a `nodemcu-live:` editor containing `print('HELLO_FROM_UPLOAD_CHANGES')`.
+- Confirmed Monaco editor replacement needs CDP `Input.dispatchKeyEvent` with `type: "keyDown"` for Ctrl+A / Ctrl+S. `rawKeyDown` did not reliably select editor text.
+- Performed the rapid two-save sequence manually:
+  - replace with `print("Hello world")`, save
+  - after ~100ms replace with `print("Hello world!")`, save
+  - observed status progression: `Interrupting Save Live Device File...` → `saving init.lua...` → `saved init.lua`
+- Confirmed the final device content by direct serial DTR/RTS reset; the boot output printed `Hello world!`.
+- Confirmed VS Code's integrated Terminal / serial monitor is canvas-rendered: DOM text and CDP accessibility tree expose the terminal widget/title but not the serial bytes. For e2e assertions, use CDP for UI/editor/save behavior and direct `serialport` capture for final hardware output.
+- The first automated version exposed a real bug: aborting `nodemcu-tool` mid live-save could leave/upload a zero-byte `init.lua` while reporting success. Final fix:
+  - `onDidSaveTextDocument` snapshots `doc.getText()` synchronously before entering `OperationGate`.
+  - `uploadLiveDocument()` now prefers `DirectSerialUploader` for live saves, falling back to `nodemcu-tool` only if direct serial fails. The direct path writes a temp file and renames it, avoiding zero-byte target files during interrupted saves.
+- Rapid-save e2e now waits until the first save reaches `saving init.lua...` before making the second edit. This still interrupts an active upload but avoids racing VS Code's save-event dispatch.
+- Final physical verification passed:
+  - `npm run typecheck`
+  - `npm run build`
+  - `npm run test:unit` — 127 passed
+  - `npm run test:integration` — 20 passed
+  - `npm exec vitest run tests/e2e/device_cdp_e2e.test.ts` — 5 passed on `COM7`
+
+Files changed in this update:
+
+- `tests/e2e/device_cdp_e2e.test.ts`
+  - Added physical test `7. Opens init.lua from Device Files and saves rapid live edits to the device`.
+  - Added CDP helpers for NodeMCU sidebar focus, Device Files row click, live editor text replacement, live save polling, and DTR/RTS serial reset capture.
+  - Made CDP debug port and firmware repo configurable via `NODEMCU_VSCODE_E2E_CDP_PORT` and `NODEMCU_VSCODE_E2E_FIRMWARE_REPO`.
+- `src/extension.ts`
+  - Await `deviceFilesProvider.reload()` before reporting upload/live-save success so tests and users do not see success while the provider is still holding the COM port.
+  - `doRefreshExplorer()` now refreshes all providers, not only ports.
+  - Live-edit saves snapshot document content before entering the operation gate and prefer direct serial upload for atomic save behavior.
+- `.claude/SKILLS/devtools-automation/SKILL.md`
+  - Added the learned CDP selectors and Monaco/terminal guidance.
+
 ## What Was Implemented And Verified
 
 All three user-reported issues have been fully addressed:

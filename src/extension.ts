@@ -783,6 +783,7 @@ async function doUploadFile(signal?: AbortSignal, uri?: vscode.Uri): Promise<voi
     setStatus("error", `upload FAILED (${failCount} errors)`);
     vscode.window.showErrorMessage(`Uploaded ${successCount} files, ${failCount} failed.`);
   } else {
+    await deviceFilesProvider?.reload();
     setStatus("success", `uploaded ${successCount} files`);
     vscode.window.showInformationMessage(`Successfully uploaded ${successCount} file(s).`);
   }
@@ -908,6 +909,7 @@ async function doUploadChanges(signal?: AbortSignal): Promise<void> {
     setStatus("error", `upload FAILED (${failCount} errors)`);
     vscode.window.showErrorMessage(`Uploaded ${successCount} files, ${failCount} failed.`);
   } else {
+    await deviceFilesProvider?.reload();
     setStatus("success", `uploaded ${successCount} files`);
     vscode.window.showInformationMessage(`Successfully uploaded ${successCount} file(s).`);
   }
@@ -977,7 +979,7 @@ async function doOpenLiveDeviceFile(signal?: AbortSignal, item?: { remoteFile?: 
   setStatus("success", `opened ${remoteName}`);
 }
 
-async function uploadLiveDocument(document: vscode.TextDocument, signal?: AbortSignal): Promise<void> {
+async function uploadLiveDocument(document: vscode.TextDocument, signal?: AbortSignal, contentSnapshot?: string): Promise<void> {
   if (document.uri.scheme !== LIVE_EDIT_SCHEME) return;
   const metadata = liveEditFs.getMetadata(document.uri);
   const cfg = getConfigOrNull();
@@ -990,19 +992,19 @@ async function uploadLiveDocument(document: vscode.TextDocument, signal?: AbortS
   const localPath = path.join(tempRoot, path.basename(metadata.remoteName));
   let r: { success: boolean; error?: string };
   try {
-    fs.writeFileSync(localPath, document.getText(), "utf-8");
-    r = await uploadWithFallback(
-      tool,
-      { python, port: metadata.port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal },
-      localPath,
-      metadata.remoteName,
-    );
+    fs.writeFileSync(localPath, contentSnapshot ?? document.getText(), "utf-8");
+    const opts = { python, port: metadata.port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+    r = await new DirectSerialUploader().upload(opts, localPath, metadata.remoteName, (s) => outputChannel.append(s));
+    if (!r.success) {
+      outputChannel.appendLine(`Direct serial live-save failed (${r.error}). Retrying with nodemcu-tool...`);
+      r = await uploadWithFallback(tool, opts, localPath, metadata.remoteName);
+    }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
   if (r.success) {
+    await deviceFilesProvider?.reload();
     setStatus("success", `saved ${metadata.remoteName}`);
-    deviceFilesProvider?.refresh();
   } else {
     setStatus("error", "save FAILED");
     outputChannel.appendLine(`Live edit upload failed for ${metadata.remoteName}: ${r.error}`);
@@ -1269,6 +1271,7 @@ async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
 }
 
 function doRefreshExplorer(): void {
+  refreshAll();
   void refreshDetectedPortsAndMaybeSelect();
 }
 
@@ -1639,7 +1642,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.registerFileSystemProvider(LIVE_EDIT_SCHEME, liveEditFs, { isReadonly: false }),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       if (doc.uri.scheme === LIVE_EDIT_SCHEME) {
-        void operationGate.run("Save Live Device File", (signal) => uploadLiveDocument(doc, signal));
+        const contentSnapshot = doc.getText();
+        void operationGate.run("Save Live Device File", (signal) => uploadLiveDocument(doc, signal, contentSnapshot));
       }
     }),
   );
