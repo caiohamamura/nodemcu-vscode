@@ -13,7 +13,7 @@ in `scripts/`.
 
 | Skill | Use it for |
 | --- | --- |
-| [`devtools-automation`](./devtools-automation/SKILL.md) | Drive a running VS Code Extension Development Host via Chrome DevTools Protocol. Inspect tree-view state, toggle module checkboxes, run command-palette commands, capture console logs. **The primary way to validate the NodeMCU sidebar UI end-to-end without a human in the loop.** |
+| [`devtools-automation`](./devtools-automation/SKILL.md) | Drive a running VS Code Extension Development Host via Chrome DevTools Protocol. Inspect tree-view state, Device Files, toggle module checkboxes, run command-palette commands such as Upload and Monitor, capture console logs. **The primary way to validate the NodeMCU sidebar UI end-to-end without a human in the loop.** |
 
 ## How to add a new skill
 

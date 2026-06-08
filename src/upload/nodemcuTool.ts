@@ -1,6 +1,7 @@
 import { Shell, type ShellRunOptions, type ShellRunResult } from "../util/shell";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 
 export interface NodemcuToolOptions {
   python: string;
@@ -9,6 +10,7 @@ export interface NodemcuToolOptions {
   baudUpload: number;
   compile: boolean;
   run?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface FileEntry {
@@ -88,7 +90,7 @@ export class NodemcuTool {
       "--remotename", remoteName,
       localPath,
     ]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog }, 20_000);
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog, signal: opts.signal }, 20_000);
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
@@ -96,40 +98,63 @@ export class NodemcuTool {
     const destinationDir = path.dirname(localPath);
     const downloadedPath = path.join(destinationDir, remoteName);
     const cmd = this.args(opts, ["download", remoteName]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { cwd: destinationDir, onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { cwd: destinationDir, onStdout: onLog, onStderr: onLog, signal: opts.signal });
     if (r.exitCode === 0 && downloadedPath !== localPath && fs.existsSync(downloadedPath)) {
       fs.renameSync(downloadedPath, localPath);
     }
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
+  async downloadContent(opts: NodemcuToolOptions, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; content?: Buffer; error?: string }> {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nodemcu-download-"));
+    const localPath = path.join(tempRoot, path.basename(remoteName));
+    try {
+      const r = await this.download(opts, remoteName, localPath, onLog);
+      if (!r.success) return r;
+      return { success: true, content: fs.existsSync(localPath) ? fs.readFileSync(localPath) : Buffer.alloc(0) };
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }
+
+  async uploadContent(opts: NodemcuToolOptions, content: Uint8Array, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nodemcu-upload-"));
+    const localPath = path.join(tempRoot, path.basename(remoteName));
+    try {
+      fs.writeFileSync(localPath, content);
+      return await this.upload(opts, localPath, remoteName, onLog);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }
+
   async remove(opts: NodemcuToolOptions, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, ["remove", remoteName]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog, signal: opts.signal });
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async runFile(opts: NodemcuToolOptions, remoteName: string, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, ["run", remoteName]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog, signal: opts.signal });
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async reset(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, ["reset"]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog }, 8_000);
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog, signal: opts.signal }, 8_000);
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async mkfs(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     const cmd = this.args(opts, ["mkfs", "--noninteractive"]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog }, 45_000);
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog, signal: opts.signal }, 45_000);
     return r.exitCode === 0 ? { success: true } : { success: false, error: r.stderr || r.stdout };
   }
 
   async listFiles(opts: NodemcuToolOptions, onLog: (s: string) => void): Promise<FileEntry[]> {
     const cmd = this.args(opts, ["fsinfo", "--json"]);
-    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog });
+    const r = await this.runWithDelay(cmd.command, cmd.args, { onStdout: onLog, onStderr: onLog, signal: opts.signal });
     if (r.exitCode !== 0) return [];
     try {
       const parsed = JSON.parse(r.stdout) as { files?: Array<{ name: string; size: number }> };

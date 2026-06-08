@@ -18,6 +18,7 @@ export interface BuildContext {
   generator: "Ninja" | "Unix Makefiles" | "NMake Makefiles" | "MinGW Makefiles" | "MSYS Makefiles" | "Unknown";
   onLog: (chunk: string) => void;
   onStderr: (chunk: string) => void;
+  signal?: AbortSignal;
 }
 
 export interface BuildResult {
@@ -101,6 +102,7 @@ export class BuildManager {
         cwd: configureCmd.cwd,
         onStdout: ctx.onLog,
         onStderr: ctx.onStderr,
+        signal: ctx.signal,
       });
       if (configureResult.exitCode !== 0) {
         const combined = configureResult.stdout + configureResult.stderr;
@@ -126,6 +128,7 @@ export class BuildManager {
       cwd: buildCmd.cwd,
       onStdout: ctx.onLog,
       onStderr: ctx.onStderr,
+      signal: ctx.signal,
     });
 
     const combined = buildResult.stdout + buildResult.stderr;

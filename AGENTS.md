@@ -17,8 +17,14 @@ end-to-end Lua firmware development for **NodeMCU / ESP8266**:
 - Builds firmware from a NodeMCU firmware checkout via CMake / Ninja / Make.
 - Flashes firmware to a connected ESP8266 via `esptool.py` / `esptool`.
 - Uploads / downloads / removes Lua files on the device via `nodemcu-tool`.
+- Live-edits device files through an in-memory `nodemcu-live:` filesystem and
+  uploads edited content on save.
+- Auto-selects a serial port when detection is unambiguous, preserving an
+  available configured port.
 - Lists available C and Lua modules in the sidebar (with checkboxes) and writes
   selection back to `nodemcu.ini`.
+- Offers Lua module autocomplete snippets that enable `[lua_modules]` entries
+  and sync them to the device.
 - Generates `.vscode/nodemcu-api.lua` and `.luarc.json` so the bundled
   `sumneko.lua` language server gives full IntelliSense for NodeMCU globals.
 
@@ -88,14 +94,18 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │   ├── config/                     ← nodemcu.ini
 │   │   ├── nodemcuIni.ts           ← parse/serialize/save/load, defaults, setters
 │   │   └── configWatcher.ts        ← fs.watch + 200ms debounce
+│   ├── device/
+│   │   └── liveEditFs.ts           ← in-memory nodemcu-live: filesystem for Device Files live edit
 │   ├── firmware/
 │   │   └── managedFirmware.ts      ← download/extract/patch the bundled firmware
 │   ├── flash/
+│   │   ├── autoPort.ts             ← choose when detected serial ports can be auto-selected
 │   │   ├── flashManager.ts         ← esptool.py write_flash (or python -m esptool)
 │   │   └── serialDiscovery.ts      ← list serial ports, with fakes for tests
 │   ├── luaApi/
 │   │   └── apiFiles.ts             ← generate .vscode/nodemcu-api.lua + .luarc.json
 │   ├── luaPicker/
+│   │   ├── luaModuleCompletion.ts  ← Lua require() completion item helpers
 │   │   ├── moduleList.ts           ← scan firmware/lua_modules + app/modules
 │   │   └── luaModuleResolver.ts    ← resolve local/remote lua module sources
 │   ├── status/
@@ -173,7 +183,7 @@ Key symbols and their line ranges:
 | --- | --- | --- |
 | `LEGACY_DEFAULT_FIRMWARE_PATH` | The string `"../nodemcu-firmware"` we silently treat as empty | 38 |
 | `class AsyncTreeProvider` | Generic `vscode.TreeDataProvider` with debounced async loader | 40 |
-| `deviceExplorerProvider / luaModulesProvider / cModulesProvider` | Top-level tree providers | 102 |
+| `deviceExplorerProvider / deviceFilesProvider / luaModulesProvider / cModulesProvider` | Top-level tree providers | 102 |
 | `existingIniPath()` / `getIniPath()` / `getWorkspaceRoot()` | INI discovery: workspace, one-level subdirs, then parent walk from active editor | 106 |
 | `getConfigOrNull()` | Cached loader; `null` if no `nodemcu.ini` | 149 |
 | `getFirmwarePath()` | Cached async resolver; reads `nodemcu-vscode.firmwarePath` setting → ini → triggers `ensureManagedFirmware()` | 164 |
@@ -181,10 +191,13 @@ Key symbols and their line ranges:
 | `doBuild()` / `doFlash()` / `doBuildAndFlash()` | Command palette handlers | 341 / 386 / 419 |
 | `doInitProject()` | Writes `nodemcu.ini` + `init.lua`, starts `ConfigWatcher` | 424 |
 | `doUploadFile()` / `doUploadChanges()` | `src/`-driven and mtime-tracked uploads | 488 / 651 |
+| `doUploadAndMonitor()` | Close monitor, upload changed files, sync Lua modules, reopen monitor (`F5`) | near `doSyncLuaModules()` |
+| `doOpenLiveDeviceFile()` / `uploadLiveDocument()` | Device Files live edit via `nodemcu-live:` and upload-on-save | near device file commands |
 | `doSyncLuaModules()` | Compiles + uploads `[lua_modules]` entries as `.lc` | 826 |
 | `doRegenerateLuaApi()` | Writes `.vscode/nodemcu-api.lua` + `.luarc.json` | 861 |
 | `doAddLuaModule()` / `doToggleLuaModule()` / `doToggleCModule()` | Tree-view actions | 875 / 908 / 932 |
-| `buildDeviceExplorerProvider()` | Two children: `Serial Ports` (with click-to-select) + `Device Files` (from `nodemcu-tool fsinfo`) | 985 |
+| `buildDeviceExplorerProvider()` | Lists detected serial ports with click-to-select | 985 |
+| `buildDeviceFilesProvider()` | Lists on-device files from `nodemcu-tool fsinfo --json`; click opens live edit | near `buildDeviceExplorerProvider()` |
 | `buildLuaModulesProvider()` | Lists firmware `lua_modules/`, checkboxes bound to `cfg.lua_modules` | 1087 |
 | `buildCModulesProvider()` | Lists `app/modules/*.c` (core) + named optional + named libraries, checkboxes bound to `cfg.c_modules` | 1135 |
 | `activate()` | Wires everything; registers `cTreeView.onDidChangeCheckboxState` and `luaTreeView.onDidChangeCheckboxState` to `doToggleCModule` / `doAddLuaModule` | 1236 |
@@ -199,6 +212,8 @@ Extension Development Host (see §9).
 | File | Exports | Notes |
 | --- | --- | --- |
 | `src/build/buildManager.ts` | `BuildManager` | Diffs `user_modules.h`; if C modules added/removed, `cmake -S` reconfigures, then `cmake --build`. Returns `BuildResult { success, problems, summary, binPaths, durationMs, needsReconfigure, modulesChanged }`. |
+| `src/device/liveEditFs.ts` | `LiveEditFileSystemProvider`, `LIVE_EDIT_SCHEME` | Writable in-memory `nodemcu-live:` documents for Device Files live edit; saves are uploaded by `extension.ts`. |
+| `src/flash/autoPort.ts` | `chooseAutoPort`, `isNodeMcuLikePort` | Pure auto-selection policy: keep available configured port; otherwise select only an unambiguous single or NodeMCU-like port. |
 | `src/build/toolchain.ts` | `ToolchainLocator`, `cmakeConfigureCommand`, `cmakeBuildCommand`, `esptoolFlashCommand`, `normalizeFlashSize` | Detects Ninja > MSYS Makefiles > NMake > MinGW > Unix Makefiles; normalizes `4M` → `4MB`. |
 | `src/build/userModulesWriter.ts` | `generateUserModulesHeader`, `writeUserModulesHeader`, `readSelectedModules`, `diffSelectedModules`, `isCModulesConfigChanged` | Hardcoded `KNOWN_MODULES` set; emits `LUA_USE_MODULES_<NAME>` defines. |
 | `src/build/outputParser.ts` | `parseProblems`, `summarize`, `extractModuleBuildSummary` | Pure regex; no vscode dependency. |
@@ -209,6 +224,7 @@ Extension Development Host (see §9).
 | `src/flash/serialDiscovery.ts` | `SerialDiscovery` | Tries `serialport`, then PowerShell `SerialPort::GetPortNames` on Windows, then `/dev/tty*` glob on Linux. Honors `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` env var (JSON array of strings or `{path, manufacturer, ...}`). |
 | `src/luaApi/apiFiles.ts` | `generateLuaApiFile`, `generateLuaRc`, `writeLuaRc` | Hardcoded `KNOWN_GLOBALS` descriptions for ~30 modules; emits `---@meta` + `---@class NodeMCUModule` annotations. |
 | `src/luaPicker/moduleList.ts` | `listLuaModulesFromFirmware`, `listCModules` | `LuaModuleInfo` has `mainFile` + `examples`; `CModuleInfo` has `category: "core" \| "optional" \| "library"`. The optional list is hardcoded (`coap`, `dht`, `http`, `mqtt`, `pcm`, `sjson`, `tsl2561`, `websocket`); libraries are `u8g2`, `ucg`. |
+| `src/luaPicker/luaModuleCompletion.ts` | `createLuaModuleCompletionItem`, `luaModuleRequireText`, `luaModuleSource` | Builds Lua autocomplete snippets and the accept-command payload that enables/syncs modules. |
 | `src/luaPicker/luaModuleResolver.ts` | `resolveLuaModule`, `resolveAllLuaModules`, `validateLuaModuleSource` | Search order: absolute → `workspaceRoot/<source>` → `firmware/lua_modules/<name>/<basename>` → `firmware/lua_modules/<source>`. Rejects `..` paths and invalid URLs. |
 | `src/status/statusBar.ts` | `StatusEmitter` | `EventEmitter` subclass; states: `idle`, `configuring`, `building`, `flashing`, `uploading`, `success`, `error`. |
 | `src/upload/nodemcuTool.ts` | `NodemcuTool` | Spawns `node <bin/nodemcu-tool.js>`; honors `NODEMCU_VSCODE_NODEMCU_TOOL` env var (path to script) for test injection. `listFiles` parses JSON first, falls back to text. |
@@ -225,11 +241,17 @@ Extension Development Host (see §9).
 - **View container**: `nodemcu-vscode` (activity bar) with `resources/icons/nodemcu.svg`.
 - **Views**:
   - `nodemcu.deviceExplorer` — Device Explorer
+  - `nodemcu.deviceFiles` — Device Files
   - `nodemcu.projectTasks` — Project Tasks
   - `nodemcu.luaModules` — Lua Modules (checkboxes)
   - `nodemcu.cModules` — C Modules (checkboxes)
-- **Commands**: 17 commands, prefixed `nodemcu-vscode.*`. Keybindings: `Ctrl+Shift+B` (build), `Ctrl+Alt+B` (build & flash).
-- **Context menus**: `view/item/context` adds `uploadFile` (Lua modules), `toggleCModule` (C modules), `downloadFile` / `deleteFile` / `refreshExplorer` (device files).
+- **Commands**: prefixed `nodemcu-vscode.*`, including `uploadAndMonitor`,
+  `openLiveDeviceFile`, and `acceptLuaModuleCompletion`. Keybindings:
+  `Ctrl+Shift+B` (build), `Ctrl+Alt+B` (build & flash), `F5` (upload and
+  monitor), and `Delete` / `Backspace` in Device Files.
+- **Context menus**: `view/item/context` adds `uploadFile` (Lua modules),
+  `toggleCModule` (C modules), and `openLiveDeviceFile` / `downloadFile` /
+  `deleteFile` / `runFile` / `refreshExplorer` (Device Files).
 - **Settings** (`nodemcu-vscode.*`):
   - `src` (default `"src"`) — directory to watch and auto-upload.
   - `firmwarePath` (default `"../nodemcu-firmware"`, treated as empty — see `LEGACY_DEFAULT_FIRMWARE_PATH`).
@@ -294,6 +316,24 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
   - `tools/luac_cross/nodemcu-vscode-luac-assert.c` — provides `luaL_assertfail`.
     Patched into `tools/luac_cross/CMakeLists.txt` after `pixbuf.c`.
 
+### 5.4 Runtime interaction policies
+
+- **Auto port selection:** keep an available configured port. If it is missing,
+  or no port is configured, write a detected port to `nodemcu.ini` only when the
+  choice is unambiguous: exactly one serial port or exactly one NodeMCU-like port
+  (`NodeMCU`, `ESP`, `CP210`, `CH340`, `USB Serial`) among multiple ports.
+  `nodemcu-vscode.port` still overrides `nodemcu.ini`; clear it to let the
+  extension update project config.
+- **Device Files live edit:** device file clicks open an in-memory
+  `nodemcu-live:/<port>/<remote-file>` document. `onDidSaveTextDocument` uploads
+  that buffer back to the same remote file with `nodemcu-tool upload`.
+- **Lua module autocomplete:** accepting a firmware Lua module completion inserts
+  `name = require("name")`, enables the module in `[lua_modules]`, refreshes
+  views, and runs `Sync Lua Modules`.
+- **Upload and Monitor:** `nodemcu-vscode.uploadAndMonitor` closes the monitor,
+  runs the changed-file upload path (which rebuilds/flashes first if C modules
+  are dirty), syncs Lua modules, then opens `python -m serial.tools.miniterm`.
+
 ---
 
 ## 6. Build, package, and ship
@@ -334,8 +374,9 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
 
 ### 7.1 Layout
 
-- `tests/unit/*.test.ts` (10 files, 87 tests) — pure logic + `mkdtemp` I/O.
-- `tests/integration/*.test.ts` (3 files, 19 tests) — fakes `Shell` to drive
+- `tests/unit/*.test.ts` — pure logic + `mkdtemp` I/O, including auto-port and
+  Lua completion helper coverage.
+- `tests/integration/*.test.ts` — fakes `Shell` to drive
   `BuildManager` / `FlashManager` / `NodemcuTool`; uses `tests/fixtures/fake-firmware/`.
 - `tests/e2e/*.test.ts` (4 files) — run only when prerequisites are met.
 
@@ -439,6 +480,10 @@ most recent attempted fixes. Concretely:
 - **Device Explorer** still shows a static `NodeMCU (port)` placeholder instead
   of actually enumerating serial ports and listing the on-device files via
   `nodemcu-tool fsinfo --json`.
+- Newer TODO work splits file listing into **Device Files**, adds live edit via
+  `nodemcu-live:`, adds Lua module autocomplete with sync side effects, and adds
+  `Upload and Monitor` on `F5`. When debugging EDH, verify both Device Explorer
+  and Device Files panes.
 
 ### 9.1 Things to verify before "fixing" anything
 
@@ -474,8 +519,14 @@ most recent attempted fixes. Concretely:
   flashes them without manual firmware cloning.
 - `Lua Modules` and `C Modules` show rows the moment managed firmware is ready
   (or sooner with a "loading" placeholder).
-- `Device Explorer` actively enumerates `SerialPort.list()` and (if a port is
-  selected and `nodemcu-tool` is installed) the device file list.
+- `Device Explorer` actively enumerates `SerialPort.list()` and auto-selects a
+  port only when unambiguous.
+- `Device Files` lists files via `nodemcu-tool fsinfo --json`; clicking a file
+  opens live edit and saving uploads it back to the device.
+- Lua module completion accepts `name = require("name")`, enables the module in
+  `nodemcu.ini`, and syncs Lua modules.
+- `F5` runs Upload and Monitor: dirty C modules trigger build/flash before file
+  upload, Lua modules sync, then the serial monitor opens.
 
 ### 9.4 Non-obvious gotchas
 

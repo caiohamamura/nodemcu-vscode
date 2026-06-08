@@ -21,6 +21,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error("Operation cancelled");
+}
+
 function luaString(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
@@ -110,6 +114,7 @@ export class DirectSerialUploader {
     let lastError = "";
     const baudRates = Array.from(new Set([opts.baud, opts.baudUpload].filter((baud) => baud > 0)));
     for (const baudRate of baudRates) {
+      throwIfAborted(opts.signal);
       const result = await this.uploadAtBaud(opts, baudRate, localPath, remoteName, onLog);
       if (result.success) return result;
       lastError = result.error ?? lastError;
@@ -130,12 +135,14 @@ export class DirectSerialUploader {
       const content = fs.readFileSync(localPath);
       const transport = this.createTransport(opts.port, baudRate);
       try {
+        throwIfAborted(opts.signal);
         await this.connectToPrompt(transport);
         await this.execute(transport, `file.remove(${luaString(TEMP_REMOTE_NAME)})`);
         await this.execute(transport, `file.open(${luaString(TEMP_REMOTE_NAME)},"w+")`);
         await this.execute(transport, `_G.__vscode_hex=function(s) for c in s:gmatch('..') do file.write(string.char(tonumber(c,16))) end end`);
         const hex = content.toString("hex");
         for (let i = 0; i < hex.length; i += HEX_CHUNK_LENGTH) {
+          throwIfAborted(opts.signal);
           await this.execute(transport, `__vscode_hex(${luaString(hex.slice(i, i + HEX_CHUNK_LENGTH))})`);
         }
         await this.execute(transport, "file.flush() file.close()");
@@ -174,6 +181,57 @@ export class DirectSerialUploader {
       if (process.platform === "win32") {
         await delay(1500);
       }
+    }
+  }
+
+  async download(
+    opts: NodemcuToolOptions,
+    remoteName: string,
+    onLog: (s: string) => void,
+  ): Promise<{ success: boolean; content?: Buffer; error?: string }> {
+    let lastError = "";
+    const baudRates = Array.from(new Set([opts.baud, opts.baudUpload].filter((baud) => baud > 0)));
+    for (const baudRate of baudRates) {
+      throwIfAborted(opts.signal);
+      const result = await this.downloadAtBaud(opts, baudRate, remoteName, onLog);
+      if (result.success) return result;
+      lastError = result.error ?? lastError;
+      onLog(`Direct serial download at ${baudRate} baud failed: ${lastError}\n`);
+    }
+    return { success: false, error: lastError || "Direct serial download failed" };
+  }
+
+  private async downloadAtBaud(
+    opts: NodemcuToolOptions,
+    baudRate: number,
+    remoteName: string,
+    onLog: (s: string) => void,
+  ): Promise<{ success: boolean; content?: Buffer; error?: string }> {
+    try {
+      validateRemoteName(remoteName);
+      const transport = this.createTransport(opts.port, baudRate);
+      try {
+        await this.connectToPrompt(transport);
+        const output = await this.execute(
+          transport,
+          [
+            `uart.write(0,"__VSCODE_BEGIN__")`,
+            `if file.open(${luaString(remoteName)},"r") then`,
+            `repeat local c=file.read(64) if c then for i=1,#c do uart.write(0,string.format("%02x",string.byte(c,i))) end end until not c`,
+            `file.close() end`,
+            `uart.write(0,"__VSCODE_END__")`,
+          ].join(" "),
+        );
+        const match = output.match(/__VSCODE_BEGIN__([0-9a-fA-F]*)__VSCODE_END__/s);
+        if (!match) throw new Error("Unable to read remote file content");
+        onLog(`Direct serial download complete at ${baudRate} baud: ${remoteName}\n`);
+        return { success: true, content: Buffer.from(match[1], "hex") };
+      } finally {
+        await transport.close().catch(() => {});
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
     }
   }
 

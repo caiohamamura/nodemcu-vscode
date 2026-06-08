@@ -128,7 +128,8 @@ VS Code re-uses the same `__default__profile__` memento key.
   than calling `Code.exe` directly.
 - Before tree-view assertions, open the NodeMCU activity bar item and expand
   the panes; the sidebar can exist before the extension has actually populated
-  its data.
+  its data. Validate both **Device Explorer** (serial ports) and **Device Files**
+  (remote files) after the split.
 - `NodeMCU: Initialize Project` is the reliable activation point for
   workspace-scoped tests because it creates `nodemcu.ini`, seeds `init.lua`,
   and causes the views to refresh.
@@ -137,6 +138,17 @@ VS Code re-uses the same `__default__profile__` memento key.
   `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` into the Extension Development Host
   process. See [AGENTS.md §7.4](../../../AGENTS.md#74-test-only-environment-variables)
   for the full env-var contract.
+- Auto-port selection should be visible after activation when the fake serial
+  ports contain exactly one NodeMCU-like entry, e.g.
+  `[{"path":"COM42","manufacturer":"NodeMCU Test Board"}]`. Confirm the port
+  appears selected in Device Explorer and is written to `nodemcu.ini` unless a
+  valid configured port already exists.
+- Device Files rows open live-edit documents. With the fake `nodemcu-tool`,
+  seed `NODEMCU_VSCODE_FAKE_NODMCU_TOOL_STATE` with a file, click the row, edit
+  the `nodemcu-live:` document, save, and verify the fake state file changes.
+- `NodeMCU: Upload and Monitor` is the F5 workflow: run it from the command
+  palette or dispatch F5, then verify changed files upload, Lua modules sync,
+  and a `NodeMCU: <port>` terminal opens.
 - If a renderer looks stale, verify the target in `http://127.0.0.1:<port>/json`
   is the current `Extension Development Host`, then prefer `reload-window` or
   a new host over reusing an old one.
@@ -158,7 +170,7 @@ node .claude/SKILLS/devtools-automation/scripts/cdp-control.js expand-panes
 ```
 
 ### 3. Inspect Current UI State
-Retrieves lists of all visible items in the C Modules, Lua Modules, and Device Explorer panes including checkbox status (`true`/`false`).
+Retrieves lists of all visible items in the C Modules, Lua Modules, Device Explorer, and Device Files panes including checkbox status (`true`/`false`) when supported by the script.
 ```bash
 node .claude/SKILLS/devtools-automation/scripts/cdp-control.js get-state
 ```
@@ -185,6 +197,10 @@ Simulates pressing F1, typing a VS Code command, and pressing Enter to execute i
 node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "<command-text>"
 # Example: Initialize the project configuration
 node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "NodeMCU: Initialize Project"
+# Example: Run the F5 edit loop
+node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "NodeMCU: Upload and Monitor"
+# Example: Open the serial monitor directly
+node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "NodeMCU: Open Serial Monitor"
 ```
 
 ### 7. Reload the Window

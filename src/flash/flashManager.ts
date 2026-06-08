@@ -12,6 +12,7 @@ export interface FlashContext {
   port: string;
   onLog: (chunk: string) => void;
   onStderr: (chunk: string) => void;
+  signal?: AbortSignal;
 }
 
 export interface FlashResult {
@@ -60,6 +61,7 @@ export class FlashManager {
     const r = await this.shell.run(cmd.command, cmd.args, {
       onStdout: ctx.onLog,
       onStderr: ctx.onStderr,
+      signal: ctx.signal,
     });
     return {
       success: r.exitCode === 0,

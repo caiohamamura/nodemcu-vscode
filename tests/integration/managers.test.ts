@@ -234,6 +234,22 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     expect(shell.calls[0].args).toContain("init.lua");
   });
 
+  it("uploadContent writes a temp file and invokes nodemcu-tool upload", async () => {
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 0 });
+    const t = new NodemcuTool(shell as unknown as Shell);
+    const r = await t.uploadContent(
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
+      Buffer.from("print('live')"),
+      "init.lua",
+      () => { },
+    );
+    expect(r.success).toBe(true);
+    expect(shell.calls[0].args).toContain("upload");
+    expect(shell.calls[0].args).toContain("--remotename");
+    expect(shell.calls[0].args).toContain("init.lua");
+  });
+
   it("remove invokes nodemcu-tool remove", async () => {
     const shell = new FakeShell();
     shell.nextResponse({ exitCode: 0 });

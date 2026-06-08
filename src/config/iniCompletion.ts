@@ -5,8 +5,8 @@ export class IniCompletionItemProvider implements vscode.CompletionItemProvider 
   provideCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position,
-    token: vscode.CancellationToken,
-    context: vscode.CompletionContext
+    _token: vscode.CancellationToken,
+    _context: vscode.CompletionContext
   ): vscode.ProviderResult<vscode.CompletionItem[] | vscode.CompletionList> {
     const linePrefix = document.lineAt(position).text.substr(0, position.character);
 
