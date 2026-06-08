@@ -30,7 +30,7 @@ describe("generateUserModulesHeader", () => {
     expect(header).toMatch(/^#define LUA_USE_MODULES_MQTT$/m);
     expect(header).toMatch(/^#define LUA_USE_MODULES_GPIO$/m);
     expect(header).toMatch(/^\/\/#define LUA_USE_MODULES_ADC$/m);
-    expect(header).toMatch(/^\/\/#define LUA_USE_MODULES_FILE$/m);
+    expect(header).toMatch(/^#define LUA_USE_MODULES_FILE$/m);
   });
 
   it("emits guard macros", () => {
@@ -167,11 +167,11 @@ describe("isCModulesConfigChanged", () => {
   it("returns false if header matches current configuration, and true if they differ", () => {
     const headerPath = path.join(tmp, "user_modules.h");
     const cfg = defaultConfig();
-    cfg.c_modules = { wifi: true, gpio: true };
+    cfg.c_modules = { mqtt: true, coap: true };
     writeUserModulesHeader(headerPath, cfg);
     expect(isCModulesConfigChanged(headerPath, cfg)).toBe(false);
 
-    cfg.c_modules.wifi = false;
+    cfg.c_modules.mqtt = false;
     expect(isCModulesConfigChanged(headerPath, cfg)).toBe(true);
   });
 });

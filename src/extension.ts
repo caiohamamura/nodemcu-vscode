@@ -5,14 +5,14 @@ import * as os from "node:os";
 import * as child_process from "node:child_process";
 import { Shell } from "./util/shell";
 import {
+  getLuaModuleEntries,
   loadConfig,
-  parseIni,
   saveConfig,
-  defaultConfig,
   setCModule,
   setLuaModule,
   type NodemcuConfig,
 } from "./config/nodemcuIni";
+import { IniCompletionItemProvider } from "./config/iniCompletion";
 import { ConfigWatcher } from "./config/configWatcher";
 import { resolveFirmwarePath, luaModulesDir, userModulesHeader } from "./util/paths";
 import { isCModulesConfigChanged, writeUserModulesHeader } from "./build/userModulesWriter";
@@ -1542,6 +1542,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.openIni", doOpenIni),
     vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", doOpenSerialMonitor),
     vscode.commands.registerCommand("nodemcu-vscode.selectPort", doSelectPort),
+    vscode.languages.registerCompletionItemProvider(
+      { language: "ini", pattern: "**/nodemcu.ini" },
+      new IniCompletionItemProvider(),
+      "[", "="
+    )
   );
 
 }

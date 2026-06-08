@@ -53,6 +53,8 @@ async function extractDescription(filePath: string): Promise<string> {
   }
 }
 
+import { MANDATORY_C_MODULES } from "../build/userModulesWriter";
+
 export interface CModuleInfo {
   name: string;
   sourceFile: string;
@@ -76,11 +78,14 @@ export async function listCModules(firmwarePath: string): Promise<CModuleInfo[]>
     log(`readdir found ${files.length} files`);
     for (const f of files) {
       if (f.endsWith(".c")) {
-        out.push({
-          name: cModuleNameFromFile(f),
-          sourceFile: path.join(coreDir, f),
-          category: "core",
-        });
+        const modName = cModuleNameFromFile(f);
+        if (!MANDATORY_C_MODULES.has(modName)) {
+          out.push({
+            name: modName,
+            sourceFile: path.join(coreDir, f),
+            category: "core",
+          });
+        }
       }
     }
   } catch (err) {
@@ -105,8 +110,10 @@ export async function listCModules(firmwarePath: string): Promise<CModuleInfo[]>
       log(`Error checking library ${lib}: ${err}`);
     }
   }
-  log(`Returning ${out.length} modules`);
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  log(`Returning ${out.length} modules before filtering mandatory`);
+  const filteredOut = out.filter(m => !MANDATORY_C_MODULES.has(m.name)).sort((a, b) => a.name.localeCompare(b.name));
+  log(`Returning ${filteredOut.length} modules after filtering mandatory`);
+  return filteredOut;
 }
 
 async function exists(p: string): Promise<boolean> {

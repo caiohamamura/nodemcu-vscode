@@ -28,6 +28,8 @@ export interface WriteResult {
   extras: string[];
 }
 
+export const MANDATORY_C_MODULES = new Set(["file", "gpio", "net", "node", "tmr", "uart", "wifi"]);
+
 export function generateUserModulesHeader(config: NodemcuConfig): string {
   const selected = new Set<string>();
   for (const [name, enabled] of Object.entries(config.c_modules)) {
@@ -35,6 +37,12 @@ export function generateUserModulesHeader(config: NodemcuConfig): string {
     const key = name.toLowerCase();
     if (KNOWN_MODULES.has(key)) {
       selected.add(key);
+    }
+  }
+
+  for (const name of MANDATORY_C_MODULES) {
+    if (KNOWN_MODULES.has(name)) {
+      selected.add(name);
     }
   }
 

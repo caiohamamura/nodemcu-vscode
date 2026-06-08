@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { BuildManager } from "../../src/build/buildManager";
+import { writeUserModulesHeader } from "../../src/build/userModulesWriter";
 import { FlashManager } from "../../src/flash/flashManager";
 import { NodemcuTool } from "../../src/upload/nodemcuTool";
 import { defaultConfig } from "../../src/config/nodemcuIni";
@@ -37,7 +38,9 @@ describe("BuildManager (integration, mocked shell)", () => {
     fs.mkdirSync(path.join(fwPath, "app", "include"), { recursive: true });
     fs.mkdirSync(path.join(fwPath, "cmake"), { recursive: true });
     fs.writeFileSync(path.join(fwPath, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.24)\nproject(fake)\n");
-    fs.writeFileSync(path.join(fwPath, "app", "include", "user_modules.h"), "#define LUA_USE_MODULES_WIFI\n");
+    const cfg = defaultConfig();
+    cfg.c_modules = { wifi: true };
+    writeUserModulesHeader(path.join(fwPath, "app", "include", "user_modules.h"), cfg);
   });
   afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
@@ -45,10 +48,12 @@ describe("BuildManager (integration, mocked shell)", () => {
     const shell = new FakeShell();
     shell.nextResponse({ exitCode: 0, stdout: "Configuring\n" });
     shell.nextResponse({ exitCode: 0, stdout: "Building\n[100%] Built\n" });
+    const cfg = defaultConfig();
+    cfg.c_modules = { mqtt: true }; // Force reconfigure
     const mgr = new BuildManager(shell as unknown as Shell);
     const r = await mgr.build({
       firmwarePath: fwPath,
-      config: defaultConfig(),
+      config: cfg,
       parallel: true,
       jobCount: 4,
       verbose: false,

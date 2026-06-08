@@ -124,9 +124,11 @@ export function parseIni(content: string): NodemcuConfig {
   config.nodemcu.verbose = coerceBool(n.verbose, DEFAULT_NODEMCU.verbose);
   config.nodemcu.src = coerceString(n.src, DEFAULT_NODEMCU.src);
 
+  config.c_modules.file = true; // Mandatory for nodemcu-tool
   for (const [key, value] of Object.entries(c)) {
     config.c_modules[key.toLowerCase()] = coerceBool(value, true);
   }
+  config.c_modules.file = true; // Ensure it cannot be disabled
 
   for (const [key, value] of Object.entries(l)) {
     const source = coerceString(value, "");
@@ -194,6 +196,7 @@ export function saveConfig(iniPath: string, config: NodemcuConfig): void {
 }
 
 export function setCModule(config: NodemcuConfig, name: string, enabled: boolean): NodemcuConfig {
+  if (name.toLowerCase() === "file") enabled = true;
   return {
     ...config,
     c_modules: { ...config.c_modules, [name.toLowerCase()]: enabled },

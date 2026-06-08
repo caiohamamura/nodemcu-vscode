@@ -48,7 +48,7 @@ describe("listCModules", () => {
   it("lists core modules from app/modules/*.c and optional ones from subdirs", async () => {
     const fw = path.join(tmp, "fw");
     await fs.mkdir(path.join(fw, "app", "modules"), { recursive: true });
-    await fs.writeFile(path.join(fw, "app", "modules", "wifi.c"), "// wifi");
+    await fs.writeFile(path.join(fw, "app", "modules", "adc.c"), "// adc");
     await fs.writeFile(path.join(fw, "app", "modules", "MQTT.c"), "// mqtt");
     await fs.mkdir(path.join(fw, "app", "coap"), { recursive: true });
     await fs.writeFile(path.join(fw, "app", "coap", "CMakeLists.txt"), "x");
@@ -56,7 +56,7 @@ describe("listCModules", () => {
     await fs.writeFile(path.join(fw, "app", "u8g2lib", "CMakeLists.txt"), "x");
     const mods = await listCModules(fw);
     const names = mods.map((m) => m.name).sort();
-    expect(names).toContain("wifi");
+    expect(names).toContain("adc");
     expect(names).toContain("mqtt");
     expect(names).toContain("coap");
     expect(names).toContain("u8g2");

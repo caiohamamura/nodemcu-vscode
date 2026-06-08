@@ -7,3 +7,5 @@ Thumbs.db
 .env
 .tmp-extensions
 .tmp-user-dir
+bun.lock
+package-lock.json
