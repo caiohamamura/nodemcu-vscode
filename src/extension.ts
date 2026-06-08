@@ -134,6 +134,7 @@ let portRefreshTimer: NodeJS.Timeout | undefined;
 let operationGate: OperationGate;
 let projectTasksProvider: AsyncTreeProvider;
 let srcSaveTimer: NodeJS.Timeout | undefined;
+let lastSavedUri: vscode.Uri | undefined;
 
 export interface ClosedSerialMonitor {
   name: string;
@@ -403,6 +404,8 @@ function saveSelectedPort(port: string): void {
 }
 
 async function doSelectPort(item?: { serialPort?: SerialPort } | SerialPort): Promise<string | null> {
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Selecting serial port...`);
   const directPort = "serialPort" in (item ?? {}) ? (item as { serialPort?: SerialPort }).serialPort?.path : (item as SerialPort | undefined)?.path;
   if (directPort) {
     saveSelectedPort(directPort);
@@ -519,6 +522,8 @@ async function doBuildAndFlash(signal?: AbortSignal): Promise<void> {
 }
 
 async function doInitProject(): Promise<void> {
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Initializing NodeMCU project...`);
   const iniPath = getIniPath();
   if (!iniPath) {
     vscode.window.showErrorMessage("No workspace folder open.");
@@ -724,6 +729,8 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     updateProjectContext();
     return;
   }
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Mirroring src/ to device...`);
 
   const fw = await getFirmwarePath();
   if (fw) {
@@ -814,9 +821,95 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
   if (failCount > 0) {
     setStatus("error", `sync FAILED (${failCount} errors)`);
     vscode.window.showErrorMessage(`Synced ${successCount} operation(s), ${failCount} failed.`);
-  } else {
+  } else if (successCount > 0) {
+    updateSyncTimestamp();
     setStatus("success", `synced ${successCount} operation(s)`);
     vscode.window.showInformationMessage(`Synchronized src/ with ${port}.`);
+  }
+}
+
+function updateSyncTimestamp(): void {
+  const iniPath = existingIniPath();
+  if (!iniPath) return;
+  const cfg = getConfigOrNull();
+  if (!cfg) return;
+  cfg.sync.last_timestamp = new Date().toISOString();
+  cachedConfig = cfg;
+  saveConfig(iniPath, cfg);
+}
+
+async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: AbortSignal): Promise<void> {
+  const srcDir = getConfiguredSrcDir(cfg);
+  if (!srcDir) return;
+
+  outputChannel.show(true);
+  const remoteName = path.relative(srcDir, uri.fsPath).replace(/\\/g, "/");
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Uploading ${remoteName}...`);
+
+  const fw = await getFirmwarePath();
+  if (fw) {
+    const headerPath = userModulesHeader(fw);
+    if (isCModulesConfigChanged(headerPath, cfg)) {
+      await doBuildAndFlash(signal);
+      if (statusEmitter.getState() !== "success") return;
+    }
+  }
+
+  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const port = await ensurePort(cfg);
+  if (!port) return;
+  await closeSerialMonitors();
+  const identity = await ensureKnownDevice(cfg, port, signal);
+  if (!identity.allowed) return;
+
+  const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+
+  setStatus("uploading", `uploading ${remoteName}...`);
+  const result = await uploadWithFallback(toolOpts, uri.fsPath, remoteName);
+
+  if (result.success) {
+    updateSyncTimestamp();
+    setStatus("success", `uploaded ${remoteName}`);
+    outputChannel.appendLine(`Uploaded ${remoteName}`);
+  } else {
+    setStatus("error", `upload FAILED: ${remoteName}`);
+    outputChannel.appendLine(`Failed to upload ${remoteName}: ${result.error}`);
+  }
+}
+
+async function handleFileDelete(event: vscode.FileDeleteEvent): Promise<void> {
+  const cfg = getConfigOrNull();
+  if (!cfg) return;
+  if (!cfg.sync.last_timestamp) return;
+
+  const srcDir = getConfiguredSrcDir(cfg);
+  if (!srcDir) return;
+
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Handling file deletion...`);
+
+  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const port = await ensurePort(cfg);
+  if (!port) return;
+  await closeSerialMonitors();
+  const identity = await ensureKnownDevice(cfg, port);
+  if (!identity.allowed) return;
+
+  const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false };
+
+  for (const uri of event.files) {
+    if (uri.scheme !== "file") continue;
+    const rel = path.relative(srcDir, uri.fsPath);
+    if (rel.length === 0 || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    const remoteName = rel.replace(/\\/g, "/");
+    setStatus("uploading", `removing ${remoteName}...`);
+    const result = await removeWithFallback(toolOpts, remoteName);
+    if (result.success) {
+      updateSyncTimestamp();
+      outputChannel.appendLine(`Removed ${remoteName}`);
+    } else {
+      outputChannel.appendLine(`Failed to remove ${remoteName}: ${result.error}`);
+    }
   }
 }
 
@@ -944,6 +1037,8 @@ async function doRegenerateLuaApi(): Promise<void> {
   if (!cfg || !fw) return;
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Regenerating Lua API files...`);
   const modules = Object.entries(cfg.c_modules).filter(([_, v]) => v).map(([k]) => k);
   const apiPath = path.join(workspaceRoot, ".vscode", "nodemcu-api.lua");
   generateLuaApiFile({ modules, outputPath: apiPath });
@@ -960,6 +1055,8 @@ async function doAddLuaModule(item?: { module: LuaModuleInfo }): Promise<void> {
     return;
   }
   if (!fw) return;
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Adding Lua module...`);
   const modules = item ? [item.module] : await listLuaModulesFromFirmware(fw);
   if (modules.length === 0) {
     vscode.window.showInformationMessage("No Lua modules found in firmware/lua_modules/.");
@@ -990,6 +1087,8 @@ async function doToggleLuaModule(item?: { module: LuaModuleInfo }): Promise<void
     await doAddLuaModule();
     return;
   }
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Toggling Lua module ${item.module.name}...`);
   const cfg = getConfigOrNull();
   if (!cfg) {
     vscode.window.showErrorMessage("No nodemcu.ini found in workspace. Run 'NodeMCU: Initialize Project' first.");
@@ -1010,6 +1109,8 @@ async function doToggleLuaModule(item?: { module: LuaModuleInfo }): Promise<void
 }
 
 async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Toggling C module...`);
   const cfg = getConfigOrNull();
   if (!cfg) {
     vscode.window.showErrorMessage("No nodemcu.ini found in workspace. Run 'NodeMCU: Initialize Project' first.");
@@ -1040,6 +1141,8 @@ async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
 }
 
 function doRefreshExplorer(): void {
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Refreshing explorer...`);
   refreshAll();
   void refreshDetectedPortsAndMaybeSelect();
 }
@@ -1047,6 +1150,8 @@ function doRefreshExplorer(): void {
 function doOpenIni(): void {
   const iniPath = getIniPath();
   if (!iniPath) return;
+  outputChannel.show(true);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Opening nodemcu.ini...`);
   vscode.window.showTextDocument(vscode.Uri.file(iniPath));
 }
 
@@ -1260,10 +1365,23 @@ class LuaModuleCompletionProvider implements vscode.CompletionItemProvider {
 function scheduleSrcSync(document: vscode.TextDocument): void {
   const cfg = getConfigOrNull();
   if (!cfg || !isUriUnderSrc(document.uri, cfg)) return;
+  lastSavedUri = document.uri;
   if (srcSaveTimer) clearTimeout(srcSaveTimer);
   srcSaveTimer = setTimeout(() => {
     srcSaveTimer = undefined;
-    void operationGate.run("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: true, signal }));
+    const uri = lastSavedUri;
+    lastSavedUri = undefined;
+    if (!uri) return;
+    const currentCfg = getConfigOrNull();
+    if (!currentCfg) return;
+    outputChannel.show(true);
+    if (currentCfg.sync.last_timestamp) {
+      outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, uploading single file...`);
+      void operationGate.run("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal));
+    } else {
+      outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, performing full sync...`);
+      void operationGate.run("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal }));
+    }
   }, 300);
 }
 
@@ -1307,6 +1425,7 @@ export function activate(context: vscode.ExtensionContext): void {
     luaTreeView,
     cTreeView,
     vscode.workspace.onDidSaveTextDocument(scheduleSrcSync),
+    vscode.workspace.onDidDeleteFiles(handleFileDelete),
   );
 
   cTreeView.onDidChangeCheckboxState(async (e) => {
@@ -1365,6 +1484,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(new vscode.Disposable(() => {
     if (portRefreshTimer) clearInterval(portRefreshTimer);
     if (srcSaveTimer) clearTimeout(srcSaveTimer);
+    lastSavedUri = undefined;
   }));
 
   context.subscriptions.push(

@@ -19,6 +19,11 @@ end-to-end Lua firmware development for **NodeMCU / ESP8266**:
 - Uploads / downloads / removes Lua files on the device via `nodemcu-tool`.
 - Live-edits device files through an in-memory `nodemcu-live:` filesystem and
   uploads edited content on save.
+- Transactionally syncs the local `src/` directory to the device: first save
+  does a full mirror; subsequent saves upload only the changed file. File
+  deletions are mirrored too.
+- Opens the **NodeMCU** output channel automatically on every action so users
+  can follow progress in real time.
 - Auto-selects a serial port when detection is unambiguous, preserving an
   available configured port.
 - Lists available C and Lua modules in the sidebar (with checkboxes) and writes
@@ -43,8 +48,8 @@ the user deliberately sets `firmware_path` in `nodemcu.ini` or
 ```bash
 npm run typecheck    # tsc --noEmit (strict: noUnusedLocals, noUnusedParameters)
 npm run build        # esbuild bundles src/extension.ts → dist/extension.js (cjs, node18)
-npm run test:unit    # vitest run tests/unit  (87 tests, ~0.5s)
-npm run test:integration   # vitest run tests/integration  (19 tests, ~1.3s)
+npm run test:unit    # vitest run tests/unit  (165 tests, ~5s)
+npm run test:integration   # vitest run tests/integration  (26 tests, ~24s)
 npm run test:e2e     # spawns VS Code Extension Development Host; mostly skipped without hardware
 npm test             # runs all three
 npm run watch        # esbuild --watch
@@ -465,27 +470,73 @@ title contains `[Extension Development Host]`. If it doesn't, run
 
 ## 9. Current handoff context (read this last)
 
-The extension is still failing in the Extension Development Host despite the
-most recent attempted fixes. Concretely:
+### 9.1 Transactional src/ sync (latest feature)
 
-- **Build & Flash** still reports
-  `No nodemcu.ini found in workspace. Run 'NodeMCU: Initialize Project' first.`
-  Even after running *Initialize Project*. Hypothesis: `getConfigOrNull()` is
-  populated but `cachedConfig` is being clobbered by a stale `ConfigWatcher`,
-  or the Extension Development Host is loading an old `dist/extension.js`.
+The extension now supports transactional sync of the `src/` directory:
+
+1. **First save** (or when `[sync] last_timestamp` is empty) → `mirrorSrcToDevice`
+   does a full mirror: format device, list remote files, upload/delete as needed
+   (via `planMirrorSync`), then writes the timestamp.
+2. **Subsequent saves** → `scheduleSrcSync` calls `doUploadSingleFile` which
+   uploads only the saved file via `uploadWithFallback`, then updates the
+   timestamp.
+3. **File deletions** → `handleFileDelete` removes the remote file via
+   `removeWithFallback` and updates the timestamp.
+
+Key entry points in `src/extension.ts`:
+- `scheduleSrcSync` (line ~1351): `onDidSaveTextDocument` handler, 300ms debounce
+- `doUploadSingleFile` (line ~837): uploads one file when `last_timestamp` exists
+- `handleFileDelete` (line ~873): `onDidDeleteFiles` handler
+- `updateSyncTimestamp` (line ~825): writes `[sync] last_timestamp` to ini
+- `mirrorSrcToDevice` (line ~717): full mirror path (format + plan + upload/delete)
+
+### 9.2 Bug fix: Device UUID clobbering
+
+**Root cause:** `updateSyncTimestamp(cfg)` received a stale `cfg` captured before
+`ensureKnownDevice` replaced `cachedConfig` with the device UUID. When it called
+`saveConfig`, it overwrote the just-written UUID on disk.
+
+**Fix (2026-06-08):** `updateSyncTimestamp()` no longer takes a `cfg` parameter.
+It re-reads `cachedConfig` via `getConfigOrNull()` instead of using the
+caller-supplied reference. All callers (`mirrorSrcToDevice`, `doUploadSingleFile`,
+`handleFileDelete`) were updated to call `updateSyncTimestamp()` without args.
+Also `scheduleSrcSync` was fixed to pass `currentCfg` (fresh) instead of `cfg`
+(stale outer closure) to `doUploadSingleFile`.
+
+### 9.3 Output channel visibility
+
+Every action entry point now calls `outputChannel.show(true)` + a timestamped
+`outputChannel.appendLine` before starting work. This replaces silent background
+operations. Functions updated in 2026-06-08 session:
+
+| Function | Change |
+|---|---|
+| `mirrorSrcToDevice` | Added `show(true)` + "Mirroring" line |
+| `doUploadSingleFile` | Added `show(true)` + "Uploading" line |
+| `handleFileDelete` | Added `show(true)` + "Handling deletion" line |
+| `scheduleSrcSync` | Added `show(true)` + "File saved" line in the timeout callback |
+| `doInitProject` | Added `show(true)` + "Initializing" line |
+| `doRegenerateLuaApi` | Added `show(true)` + "Regenerating" line |
+| `doAddLuaModule` | Added `show(true)` + "Adding" line |
+| `doToggleLuaModule` | Added `show(true)` + "Toggling" line |
+| `doToggleCModule` | Added `show(true)` + "Toggling" line |
+| `doSelectPort` | Added `show(true)` + "Selecting" line |
+| `doRefreshExplorer` | Added `show(true)` + "Refreshing" line |
+| `doOpenIni` | Added `show(true)` + "Opening" line |
+
+Functions already covered by `commandWithOperation` (which auto-calls
+`showOperationLog` → `outputChannel.show(true)`) were left unchanged.
+
+### 9.4 Known issues
+
 - **Lua Modules** view is empty. It should list every directory in
   `firmware/lua_modules/` with a checkbox.
 - **C Modules** view is empty. Same as above for `app/modules/*.c` and the
   hardcoded optional/library list.
-- **Device Explorer** still shows a static `NodeMCU (port)` placeholder instead
-  of actually enumerating serial ports and listing the on-device files via
-  `nodemcu-tool fsinfo --json`.
-- Newer TODO work splits file listing into **Device Files**, adds live edit via
-  `nodemcu-live:`, adds Lua module autocomplete with sync side effects, and adds
-  `Upload and Monitor` on `F5`. When debugging EDH, verify both Device Explorer
-  and Device Files panes.
+- `package.json#contributes.configuration["nodemcu-vscode.firmwarePath"]` still
+  has the legacy `"../nodemcu-firmware"` default. Change to `""` for new users.
 
-### 9.1 Things to verify before "fixing" anything
+### 9.5 Things to verify before "fixing" anything
 
 1. The Extension Development Host is loading the freshly built `dist/extension.js`.
    Add a timestamp log at the top of `activate()` and reload.
@@ -500,12 +551,8 @@ most recent attempted fixes. Concretely:
 4. `cachedConfig` is in sync with what's on disk. `ConfigWatcher.onChange`
    overwrites `cachedConfig`; make sure the `doBuild` / `doFlash` paths read
    the cached value but the file watcher's debounce hasn't lost an edit.
-5. `doBuild()` should not return early on the "no config" path if a project
-   was just initialized in the same session; the activate-time `getConfigOrNull()`
-   should be reactive to `doInitProject()` calling `cachedConfig = loadConfig(...)`
-   (it does — verify it's running).
 
-### 9.2 Firmware policy (do not regress)
+### 9.6 Firmware policy (do not regress)
 
 - `firmware_path` empty → use managed firmware (download `mbedtls-2.28.10-beta`).
 - The literal string `../nodemcu-firmware` from older configs is **legacy noise**
@@ -513,38 +560,50 @@ most recent attempted fixes. Concretely:
   `src/extension.ts:170` `LEGACY_DEFAULT_FIRMWARE_PATH`).
 - Only honor a non-empty `firmware_path` when the user has clearly set it.
 
-### 9.3 Expected end state
+### 9.8 CDP/e2e testing rule (MANDATORY)
 
-- `NodeMCU: Build & Flash` produces `bin/0x00000.bin` and `bin/0x10000.bin` and
-  flashes them without manual firmware cloning.
-- `Lua Modules` and `C Modules` show rows the moment managed firmware is ready
-  (or sooner with a "loading" placeholder).
-- `Device Explorer` actively enumerates `SerialPort.list()` and auto-selects a
-  port only when unambiguous.
-- `Device Files` lists files via `nodemcu-tool fsinfo --json`; clicking a file
-  opens live edit and saving uploads it back to the device.
-- Lua module completion accepts `name = require("name")`, enables the module in
-  `nodemcu.ini`, and syncs Lua modules.
-- `F5` runs Upload and Monitor: dirty C modules trigger build/flash before file
-  upload, Lua modules sync, then the serial monitor opens.
+Before writing or modifying any CDP-driven e2e test (`tests/e2e/*.test.ts`),
+**always** first prove the UI path interactively with small manual CDP probes
+against a running Extension Development Host. Use `node` scripts that evaluate
+simple JS expressions, click elements, and inspect state. Only after the manual
+path is fully understood should you encode it into a Vitest e2e suite.
 
-### 9.4 Non-obvious gotchas
+**Why.** CDP e2e tests are slow (minutes, not seconds) and have many gotchas
+that are invisible when writing blind:
+- AI splash / Welcome page blocks the renderer on fresh `--user-data-dir`
+- Notification toasts pop up asynchronously and intercept the next click target
+- `.name` / `.title` / `.pane-header` selectors differ between editor builds
+- Monaco editor accepts CDP key events only with `type: "keyDown"`, not `rawKeyDown`
+- DOM `.textContent` differs from visible text (non-breaking spaces, hidden elements)
+- `setTimeout` in evaluated expressions is not reliable — prefer polling
+
+**Workflow:**
+1. Launch a single EDH with `--remote-debugging-port=9230`
+2. Probe the UI with `node -e` or a lightweight script (`fetch` + `WebSocket`)
+3. Iterate selectors and timing until the flow works reliably
+4. Only then write the Vitest `beforeAll`/`it`/`afterAll` harness
+5. Run `npm run typecheck && npm run build` before launching the e2e
+
+This avoids spending 2+ minutes per test iteration discovering a selector bug
+that takes 10 seconds to find interactively.
+
+Also: never write CDP tests that exercise features that are already covered by
+unit or integration tests (e.g. `parseIni`, `uploadWithFallback` logic). CDP
+tests should only cover UI integration paths that cannot be tested without a
+real renderer.
+
+### 9.9 Non-obvious gotchas
 
 - The `resources/templates/nodemcu.ini` still references the legacy
-  `../nodemcu-firmware` default. If the template is what users see after
-  *Initialize Project*, consider rewriting it to default to empty
-  `firmware_path =`.
-- `package.json#contributes.configuration["nodemcu-vscode.firmwarePath"]` has
-  the legacy `"../nodemcu-firmware"` default too. Change the default to `""`
-  if you want new users to skip the legacy string entirely.
+  `../nodemcu-firmware` default.
 - `tests/e2e/cdp_e2e.test.ts` is the contract that proves the runtime works.
   Use it as a regression check after any change to `extension.ts`'s activation
   flow.
 - The fake firmware under `tests/fixtures/fake-firmware/` does NOT contain the
-  patches; `ensureManagedFirmware` applies them on first call. The CDP e2e
-  test seeds the missing submodule files manually so the ready check passes
-  on the first try.
+  patches; `ensureManagedFirmware` applies them on first call.
 - `git status` will routinely show `package-lock.json` as dirty because
   `pnpm-lock.yaml` and `bun.lock` are also committed. Don't "fix" this.
 - The repo is 14 commits ahead of `origin/main`; the user is iterating locally
   and hasn't pushed. Don't push unless explicitly asked.
+- `.claude/SESSIONS/` is gitignored — don't create files there for the project.
+  Use proper skills under `.claude/SKILLS/` if you need reusable automation.

@@ -1,8 +1,64 @@
 # NodeMCU VSCode TODO Handoff
 
-Last updated: 2026-06-08.
+Last updated: 2026-06-08 (evening).
 
-## 2026-06-08 Update: Physical Device Live-Edit E2E
+## 2026-06-08 Update (evening): Transactional src/ Sync + Output Channel Visibility
+
+Features implemented and verified on real hardware (`COM7`, Silicon Labs CP210x):
+
+### Transactional save flow
+- When `[sync] last_timestamp` is empty, saving a file triggers `mirrorSrcToDevice` (full mirror).
+- Once populated, saves call `doUploadSingleFile` — uploads only the single changed file.
+- File deletions (`onDidDeleteFiles`) call `handleFileDelete` → `removeWithFallback`.
+- Timestamp updates via `updateSyncTimestamp()` after each successful operation.
+- Verified: second save shows "uploaded init.lua" (not "synced 2 operation(s)").
+
+### Bug fix: Device UUID clobbering
+- `updateSyncTimestamp(cfg)` received stale `cfg` captured before `ensureKnownDevice`
+  replaced `cachedConfig` with the UUID. Result: `[devices] uuids=` was emptied on every save.
+- **Fix:** `updateSyncTimestamp()` now re-reads `cachedConfig` via `getConfigOrNull()`
+  instead of using the caller-supplied reference.
+- `scheduleSrcSync` also fixed to pass `currentCfg` instead of outer `cfg` to `doUploadSingleFile`.
+- Verified on COM7: UUID `483fdaa440b8` persisted across multiple saves — no dialog reappeared.
+
+### Output channel visibility
+- Added `outputChannel.show(true)` + timestamped `appendLine` to all action entry points:
+  `mirrorSrcToDevice`, `doUploadSingleFile`, `handleFileDelete`, `scheduleSrcSync`,
+  `doInitProject`, `doRegenerateLuaApi`, `doAddLuaModule`, `doToggleLuaModule`,
+  `doToggleCModule`, `doSelectPort`, `doRefreshExplorer`, `doOpenIni`.
+- Functions already wrapped in `commandWithOperation()` (which auto-calls `showOperationLog`)
+  were left unchanged.
+
+### Files changed
+- `src/extension.ts`:
+  - `updateSyncTimestamp` no longer takes `cfg`, re-reads from `cachedConfig`
+  - `scheduleSrcSync` passes `currentCfg` instead of outer `cfg`
+  - All callers updated: `mirrorSrcToDevice`, `doUploadSingleFile`, `handleFileDelete`
+  - `outputChannel.show(true)` added to 11 entry points
+  - `doUploadSingleFile` moved `remoteName` computation earlier to use in the log line
+- `src/config/nodemcuIni.ts`: Added `SyncSection`, `last_timestamp` field (from earlier session)
+- `tests/unit/nodemcuIni.test.ts`: Sync section parsing tests
+- `tests/unit/srcMirror.test.ts`: getFilesRecursively + planMirrorSync edge cases
+- `tests/integration/managers.test.ts`: NodemcuTool transactional flows
+- `README.md`: Updated features, quick start, commands, configuration, test counts
+- `AGENTS.md`: Updated handoff context (transactional sync, UUID fix, output channel)
+- `MEMORY.md`: This file
+- `.gitignore`: Added `.claude/SESSIONS/`
+
+### Test counts validated on COM7
+- `npm run typecheck` ✓
+- `npm run build` ✓ (212.7kb)
+- `npm run test:unit` — 165 passed (20 files)
+- `npm run test:integration` — 26 passed (3 files)
+- Real device transactional flow verified: UUID persisted, timestamp updated, only single file uploaded
+
+### Known local environment
+- VS Code CLI: `C:\Users\caioh\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd`
+- Physical device: `COM7`, baud `115200`, Silicon Labs CP210x (`Silicon Labs CP210x USB to UART Bridge`)
+- Firmware checkout: `C:\Users\caioh\src\nodemcu-firmware`
+- esptool: `python -m esptool` version 5.3.0
+
+## 2026-06-08 Update (earlier): Physical Device Live-Edit E2E
 
 Manual CDP discovery was done before finalizing the automated test:
 

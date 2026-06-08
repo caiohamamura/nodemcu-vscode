@@ -9,3 +9,4 @@ Thumbs.db
 .tmp-user-dir
 bun.lock
 package-lock.json
+.claude/SESSIONS/

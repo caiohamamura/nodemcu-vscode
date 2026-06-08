@@ -24,6 +24,10 @@ export interface LuaModuleEntry {
   isRemote: boolean;
 }
 
+export interface SyncSection {
+  last_timestamp: string;
+}
+
 export interface FlashExtraFile {
   path: string;
   offset: string;
@@ -32,6 +36,7 @@ export interface FlashExtraFile {
 export interface NodemcuConfig {
   nodemcu: NodemcuSection;
   devices: { uuids: string[] };
+  sync: SyncSection;
   c_modules: Record<string, boolean>;
   lua_modules: Record<string, string>;
   flash: { extra_files: FlashExtraFile[] };
@@ -57,6 +62,7 @@ export function defaultConfig(): NodemcuConfig {
   return {
     nodemcu: { ...DEFAULT_NODEMCU },
     devices: { uuids: [] },
+    sync: { last_timestamp: "" },
     c_modules: {},
     lua_modules: {},
     flash: { extra_files: [] },
@@ -103,6 +109,7 @@ export function parseIni(content: string): NodemcuConfig {
   const f = (raw.flash ?? {}) as Record<string, unknown>;
   const b = (raw.build ?? {}) as Record<string, unknown>;
   const d = (raw.devices ?? {}) as Record<string, unknown>;
+  const s = (raw.sync ?? {}) as Record<string, unknown>;
 
   const config = defaultConfig();
 
@@ -127,6 +134,7 @@ export function parseIni(content: string): NodemcuConfig {
   config.nodemcu.verbose = coerceBool(n.verbose, DEFAULT_NODEMCU.verbose);
   config.nodemcu.src = coerceString(n.src, DEFAULT_NODEMCU.src);
   config.devices.uuids = parseUuidList(coerceString(d.uuids, ""));
+  config.sync.last_timestamp = coerceString(s.last_timestamp, "");
 
   config.c_modules.file = true; // Mandatory for nodemcu-tool
   for (const [key, value] of Object.entries(c)) {
@@ -170,6 +178,9 @@ export function serializeIni(config: NodemcuConfig): string {
   }
   out.devices = {
     uuids: normalizeUuidList(config.devices.uuids).join(", "),
+  };
+  out.sync = {
+    last_timestamp: config.sync.last_timestamp,
   };
   out.c_modules = {};
   for (const [k, v] of Object.entries(config.c_modules)) {

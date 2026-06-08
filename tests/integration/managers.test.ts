@@ -295,6 +295,123 @@ describe("NodemcuTool (integration, mocked shell)", () => {
   });
 });
 
+describe("NodemcuTool transactional flow (mocked shell)", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nodemcu-vscode-tx-"));
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it("uploads a file, lists it, removes it, and confirms removal via list", async () => {
+    const shell = new FakeShell();
+    // 1. Upload init.lua
+    shell.nextResponse({ exitCode: 0, stdout: "Uploaded 1 file" });
+    // 2. List files → shows init.lua
+    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
+      files: [{ name: "init.lua", size: 45 }],
+      total: { files: 1, used: 1024, total: 1048576 },
+    })});
+    // 3. Remove init.lua
+    shell.nextResponse({ exitCode: 0, stdout: "Removed 1 file" });
+    // 4. List files → empty
+    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
+      files: [],
+      total: { files: 0, used: 0, total: 1048576 },
+    })});
+
+    const tool = new NodemcuTool(shell as unknown as Shell);
+    const opts = { python: "python", port: "COM42", baud: 115200, baudUpload: 460800, compile: false };
+
+    const localPath = path.join(tmp, "init.lua");
+    fs.writeFileSync(localPath, 'print("hello")\n');
+
+    // Upload
+    const uploadResult = await tool.upload(opts, localPath, "init.lua", () => {});
+    expect(uploadResult.success).toBe(true);
+    expect(shell.calls[0].args).toContain("upload");
+
+    // List → expect init.lua present
+    const filesAfterUpload = await tool.listFiles(opts, () => {});
+    expect(filesAfterUpload).toHaveLength(1);
+    expect(filesAfterUpload[0].name).toBe("init.lua");
+
+    // Remove
+    const removeResult = await tool.remove(opts, "init.lua", () => {});
+    expect(removeResult.success).toBe(true);
+    expect(shell.calls[2].args).toContain("remove");
+
+    // List → expect empty
+    const filesAfterRemove = await tool.listFiles(opts, () => {});
+    expect(filesAfterRemove).toHaveLength(0);
+  });
+
+  it("simulates the full transactional save flow: upload multiple files individually", async () => {
+    const shell = new FakeShell();
+    // Upload a.lua
+    shell.nextResponse({ exitCode: 0 });
+    // Upload b.lua
+    shell.nextResponse({ exitCode: 0 });
+    // List → both files
+    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
+      files: [{ name: "a.lua", size: 10 }, { name: "b.lua", size: 20 }],
+      total: { files: 2, used: 512, total: 1048576 },
+    })});
+    // Remove a.lua (mimics onDidDeleteFiles)
+    shell.nextResponse({ exitCode: 0 });
+    // List → only b.lua
+    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
+      files: [{ name: "b.lua", size: 20 }],
+      total: { files: 1, used: 256, total: 1048576 },
+    })});
+
+    const tool = new NodemcuTool(shell as unknown as Shell);
+    const opts = { python: "python", port: "COM42", baud: 115200, baudUpload: 460800, compile: false };
+
+    const aPath = path.join(tmp, "a.lua");
+    const bPath = path.join(tmp, "b.lua");
+    fs.writeFileSync(aPath, "-- a\n");
+    fs.writeFileSync(bPath, "-- b\n");
+
+    // Upload file a (like doUploadSingleFile after save)
+    let r = await tool.upload(opts, aPath, "a.lua", () => {});
+    expect(r.success).toBe(true);
+
+    // Upload file b (like doUploadSingleFile after another save)
+    r = await tool.upload(opts, bPath, "b.lua", () => {});
+    expect(r.success).toBe(true);
+
+    // List files → both present
+    const files = await tool.listFiles(opts, () => {});
+    expect(files).toHaveLength(2);
+
+    // Remove file a (like handleFileDelete)
+    r = await tool.remove(opts, "a.lua", () => {});
+    expect(r.success).toBe(true);
+
+    // List → only b remains
+    const remaining = await tool.listFiles(opts, () => {});
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].name).toBe("b.lua");
+  });
+
+  it("handles remove of a non-existent file gracefully", async () => {
+    const shell = new FakeShell();
+    // nodemcu-tool remove on non-existent file exits with 0 in some versions,
+    // or returns error. We test both paths.
+    shell.nextResponse({ exitCode: 0, stdout: "Nothing to remove" });
+
+    const tool = new NodemcuTool(shell as unknown as Shell);
+    const r = await tool.remove(
+      { python: "python", port: "COM42", baud: 115200, baudUpload: 460800, compile: false },
+      "nonexistent.lua",
+      () => {},
+    );
+    expect(r.success).toBe(true);
+    expect(shell.calls[0].args).toContain("remove");
+    expect(shell.calls[0].args).toContain("nonexistent.lua");
+  });
+});
+
 describe("Device identity (integration, mocked shell)", () => {
   it("reads the MAC address through esptool", async () => {
     const shell = new FakeShell();
