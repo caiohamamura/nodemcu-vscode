@@ -33,7 +33,7 @@ All three user-reported issues have been fully addressed:
 
 - `npm run typecheck` — 0 errors
 - `npm run build` — succeeds (212.6kb)
-- `npm run test:unit` — 101 tests passed (14 files)
+- `npm run test:unit` — 127 tests passed (16 files)
 - `npm run test:integration` — 20 tests passed (3 files)
 - `npm exec vitest run tests/e2e/cdp_e2e.test.ts` — 3 passed (fake serial, VS Code EDH, ~9s)
 - `npm exec vitest run tests/e2e/device_cdp_e2e.test.ts` — 4 passed (real COM7 device, ~84s)
@@ -68,12 +68,10 @@ All three user-reported issues have been fully addressed:
 
 ## Tests Added/Updated
 
-- **`tests/unit/operationGate.test.ts`** [NEW]: Tests interrupt behavior.
-- **`tests/unit/directSerialUploader.test.ts`** [NEW]: Tests upload, compile, and hard reset.
+- **`tests/unit/operationGate.test.ts`** [NEW]: Tests interrupt behavior, signal propagation, three rapid runs (last wins), timeout guard, idle gate.
+- **`tests/unit/liveEditFs.test.ts`** [NEW]: Tests `LiveEditFileSystemProvider` — setDocument/readFile round-trip, metadata, writeFile, delete, rename, URI encoding, onDidChangeFile events.
+- **`tests/unit/liveEditSave.test.ts`** [NEW]: Integration of `OperationGate` + live-edit save wiring — second save interrupts first, AbortSignal is aborted when superseded, unrelated command interrupts save, three rapid saves only the last commits.
 - **`tests/integration/managers.test.ts`** [UPDATED]: Added `uploadContent` test.
-- **`tests/unit/packageManifest.test.ts`** [UPDATED]: Tests for new view/commands/keybindings.
-- **`tests/unit/autoPort.test.ts`** [NEW]: Tests auto port selection logic.
-- **`tests/unit/luaModuleCompletion.test.ts`** [NEW]: Tests Lua module completion item creation.
 
 ## Known Local Environment
 
@@ -87,3 +85,4 @@ All three user-reported issues have been fully addressed:
 - Vitest prints a `poolOptions` deprecation warning — it's noise, tests still pass.
 - There is a `src/init.lua` from an old CDP test run. It's unrelated to the live-edit fix.
 - The log file `build_debug.log` has debug `appendFileSync` calls in `doBuild()` — they can be cleaned up later but do not affect functionality.
+- `tests/__mocks__/vscode.ts` is a minimal runtime vscode shim used by `liveEditFs.test.ts`. It is wired via `vitest.config.ts` `resolve.alias`. Only the APIs actually used by `liveEditFs.ts` are implemented.
