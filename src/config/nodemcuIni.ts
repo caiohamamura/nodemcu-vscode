@@ -48,7 +48,7 @@ const DEFAULT_NODEMCU: NodemcuSection = {
   lua_number_integral: false,
   lua_number_64bits: false,
   port: "",
-  baud: 115200,
+  baud: 460800,
   upload_baud: 460800,
   flash_mode: "dio",
   flash_freq: "80m",

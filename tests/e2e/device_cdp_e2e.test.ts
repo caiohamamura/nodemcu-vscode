@@ -9,7 +9,7 @@ import { writeUserModulesHeader } from "../../src/build/userModulesWriter";
 import { parseIni, serializeIni } from "../../src/config/nodemcuIni";
 
 const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || "COM7";
-const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
+const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "460800");
 const DEBUG_PORT = Number(process.env.NODEMCU_VSCODE_E2E_CDP_PORT || "9238");
 const FIRMWARE_REPO = process.env.NODEMCU_VSCODE_E2E_FIRMWARE_REPO || "C:/Users/caioh/src/nodemcu-firmware";
 const PYTHON = process.env.NODEMCU_VSCODE_E2E_PYTHON || process.env.NODEMCU_VSCODE_PYTHON || "C:/Users/caioh/micromamba/envs/esp/python.exe";

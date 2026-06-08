@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import * as vscode from "vscode";
-import { defaultConfig } from "../../src/config/nodemcuIni";
 import { closeSerialMonitors, restoreSerialMonitors, type ClosedSerialMonitor } from "../../src/extension";
 
 const mockWindow = vscode.window as unknown as {
@@ -56,11 +55,9 @@ describe("serial monitor lifecycle", () => {
   });
 
   it("restores previously open serial monitors after live-save upload", async () => {
-    const cfg = defaultConfig();
-    cfg.nodemcu.baud = 115200;
     const closed: ClosedSerialMonitor[] = [{ name: "NodeMCU: COM7", port: "COM7" }];
 
-    await restoreSerialMonitors(closed, cfg);
+    await restoreSerialMonitors(closed);
 
     expect(mockWindow.createdTerminals).toHaveLength(1);
     expect(mockWindow.createdTerminals[0].name).toBe("NodeMCU: COM7");
@@ -71,11 +68,10 @@ describe("serial monitor lifecycle", () => {
   });
 
   it("does not restore serial monitors after an aborted save", async () => {
-    const cfg = defaultConfig();
     const controller = new AbortController();
     controller.abort();
 
-    await restoreSerialMonitors([{ name: "NodeMCU: COM7", port: "COM7" }], cfg, controller.signal);
+    await restoreSerialMonitors([{ name: "NodeMCU: COM7", port: "COM7" }], controller.signal);
 
     expect(mockWindow.createdTerminals).toHaveLength(0);
   });

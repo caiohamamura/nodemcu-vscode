@@ -103,17 +103,33 @@ describe("E2E CDP: Extension Host Automation", () => {
     fs.rmSync(EXTENSIONS_DIR, { recursive: true, force: true });
     fs.mkdirSync(EXTENSIONS_DIR, { recursive: true });
 
+    // Seed User Data to skip AI splash / welcome flow
+    const seedSrc = path.join(process.env.APPDATA || "", "Code");
+    if (fs.existsSync(seedSrc)) {
+      try {
+        const lsSrc = path.join(seedSrc, "Local State");
+        const lsDst = path.join(USER_DATA_DIR, "Local State");
+        fs.mkdirSync(path.dirname(lsDst), { recursive: true });
+        if (fs.existsSync(lsSrc)) fs.copyFileSync(lsSrc, lsDst);
+        const gsSrc = path.join(seedSrc, "User", "globalStorage", "state.vscdb");
+        const gsDst = path.join(USER_DATA_DIR, "User", "globalStorage", "state.vscdb");
+        fs.mkdirSync(path.dirname(gsDst), { recursive: true });
+        if (fs.existsSync(gsSrc)) fs.copyFileSync(gsSrc, gsDst);
+      } catch (e) {
+        console.warn("Failed to seed VS Code state:", e);
+      }
+    }
+
     // Seed global storage with fake firmware
     const stateDir = path.join(USER_DATA_DIR, "User", "globalStorage", "caiohamamura.nodemcu-vscode");
     const firmwareDir = path.join(stateDir, "firmware");
     fs.mkdirSync(firmwareDir, { recursive: true });
 
-    // Assuming we have some tests/fixtures/fake-firmware to seed
     const fakeFirmwareSrc = path.join(workspaceRoot, "tests", "fixtures", "fake-firmware");
     if (fs.existsSync(fakeFirmwareSrc)) {
-      const targetDir = path.join(firmwareDir, "mbedtls-2.28.10-beta"); // Must match MANAGED_FIRMWARE_TAG
+      const targetDir = path.join(firmwareDir, "luac_cross_optional");
       fs.cpSync(fakeFirmwareSrc, targetDir, { recursive: true });
-      fs.writeFileSync(path.join(firmwareDir, ".nodemcu-vscode-managed-firmware.json"), JSON.stringify({ tag: "mbedtls-2.28.10-beta", extractedAt: new Date().toISOString() }));
+      fs.writeFileSync(path.join(targetDir, ".nodemcu-vscode-managed-firmware.json"), JSON.stringify({ tag: "luac_cross_optional", extractedAt: new Date().toISOString() }));
     }
 
     const codeCmd = process.env.VSCODE_E2E_EXECUTABLE || path.join(process.env.LOCALAPPDATA || "", "Programs", "Microsoft VS Code", "bin", "code.cmd");
@@ -163,60 +179,96 @@ describe("E2E CDP: Extension Host Automation", () => {
     }
   });
 
+  async function clickNodeMcuButton(): Promise<void> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const button = await client.evaluate(`
+        (() => {
+          const items = Array.from(document.querySelectorAll('.activitybar .action-item, .activitybar [aria-label], .activitybar [title]'));
+          const match = items.map(e => ({
+            label: e.getAttribute('title') || e.getAttribute('aria-label') || '',
+            rect: (() => { const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height }; })()
+          })).find(e => e.label.includes('NodeMCU') && e.rect.w > 0 && e.rect.h > 0);
+          return match || null;
+        })()
+      `) as { label: string; rect: { x: number; y: number; w: number; h: number } } | null;
+      if (!button) throw new Error("NodeMCU activity bar item not found");
+      await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: button.rect.x, y: button.rect.y, button: "none" });
+      await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: button.rect.x, y: button.rect.y, button: "left", clickCount: 1 });
+      await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: button.rect.x, y: button.rect.y, button: "left", clickCount: 1 });
+      await new Promise(r => setTimeout(r, 1000));
+      return;
+    }
+  }
+
   async function focusNodeMcuSidebar(): Promise<void> {
-    const focusResult = await client.evaluate(`
-      (() => {
-        const btn = document.querySelector('[aria-label*="NodeMCU"]') || 
-                    Array.from(document.querySelectorAll('.action-item')).find(e => e.getAttribute('title') && e.getAttribute('title').includes('NodeMCU'));
-        if (!btn) return "Sidebar button not found";
-        btn.click();
-        return "Clicked NodeMCU sidebar button";
-      })()
-    `);
-    console.log("Focus result:", focusResult);
-    expect(focusResult).toBeDefined();
-    await new Promise(r => setTimeout(r, 1000));
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await clickNodeMcuButton();
+      const visible = await client.evaluate(`Array.from(document.querySelectorAll('.pane-header')).some(h => (h.getAttribute('aria-label') || '').includes('Device Explorer'))`);
+      if (visible) return;
+    }
+    throw new Error("NodeMCU sidebar did not show Device Explorer pane");
   }
 
   async function expandPanes(): Promise<void> {
-    const expandResult = await client.evaluate(`
+    await client.evaluate(`
       (() => {
         const headers = Array.from(document.querySelectorAll('.pane-header[aria-expanded="false"]'));
         headers.forEach(h => h.click());
-        return "Expanded collapsed panes: " + headers.length;
       })()
     `);
-    console.log("Expand result:", expandResult);
-    expect(expandResult).toBeDefined();
     await new Promise(r => setTimeout(r, 1000));
   }
 
   async function runCommandPalette(command: string): Promise<void> {
-    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
-    await new Promise(r => setTimeout(r, 400));
-    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
-    await new Promise(r => setTimeout(r, 1000));
-    await client.evaluate(`
-      (() => {
-        const input = document.querySelector('.quick-input-box input');
-        if (input) {
-          input.focus();
-          input.value = ${JSON.stringify(command)};
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-      })()
-    `);
-    await new Promise(r => setTimeout(r, 1000));
-    await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
-    await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
-    await new Promise(r => setTimeout(r, 1500));
+    for (let retry = 0; retry < 5; retry++) {
+      await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
+      await new Promise(r => setTimeout(r, 400));
+      await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 112, key: "F1", code: "F1" });
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 300));
+        const boxFound = await client.evaluate(`!!document.querySelector('.quick-input-box input')`);
+        if (boxFound) break;
+      }
+      await client.evaluate(`
+        (() => {
+          const input = document.querySelector('.quick-input-box input');
+          if (input) input.focus();
+        })()
+      `);
+      await client.send("Input.insertText", { text: command });
+      await new Promise(r => setTimeout(r, 1000));
+      let selectedBox = false;
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        const focusedText = await client.evaluate(`
+          (() => {
+            const rows = Array.from(document.querySelectorAll('.monaco-list-row'));
+            const cmdNoSpace = ${JSON.stringify(command)}.replace(/[^a-zA-Z0-9]/g, "");
+            const match = rows.find(r => {
+              const rowText = (r.textContent || "").replace(/[^a-zA-Z0-9]/g, "");
+              return rowText.includes(cmdNoSpace) || r.textContent?.trim() === ${JSON.stringify(command)};
+            });
+            if (match?.querySelector('.monaco-icon-label') || match?.textContent?.trim() === ${JSON.stringify(command)}) {
+              match.click();
+              return "FOCUSED";
+            }
+            const exactMatch = rows.find(r => r.textContent?.trim() === ${JSON.stringify(command)});
+            if (exactMatch) { exactMatch.click(); return "FOCUSED_EXACT"; }
+            return null;
+          })()
+        `);
+        if (focusedText) { selectedBox = true; break; }
+      }
+      if (selectedBox) break;
+    }
+    await new Promise(r => setTimeout(r, 2000));
   }
 
   it("shows only Initialize Project before a valid project exists", async () => {
-    await focusNodeMcuSidebar();
-    await expandPanes();
+    await clickNodeMcuButton();
+    await new Promise(r => setTimeout(r, 2000));
     const sidebarText = await client.evaluate(`
       (() => document.querySelector('.sidebar')?.textContent || document.body.textContent || '')()
     `);
@@ -236,13 +288,14 @@ describe("E2E CDP: Extension Host Automation", () => {
   it("shows device explorer and module selectors after initialization", async () => {
     await focusNodeMcuSidebar();
     await expandPanes();
-    const paneText = await client.evaluate(`
-      (() => Array.from(document.querySelectorAll('.pane-header')).map(h => h.textContent || h.getAttribute('aria-label') || '').join('\\n'))()
+    const paneLabels = await client.evaluate(`
+      (() => Array.from(document.querySelectorAll('.pane-header')).map(h => h.getAttribute('aria-label') || h.textContent || '').join('\\n'))()
     `);
-    expect(paneText).toContain("Device Explorer");
-    expect(paneText).toContain("Lua Modules");
-    expect(paneText).toContain("C Modules");
-    expect(paneText).not.toContain("Device Files");
+    console.log("Pane labels:", paneLabels);
+    expect(paneLabels).toMatch(/Device Explorer/i);
+    expect(paneLabels).toMatch(/Lua Modules/i);
+    expect(paneLabels).toMatch(/C Modules/i);
+    expect(paneLabels).not.toMatch(/Device Files/i);
   });
 
   it("toggles Lua module checkbox and C module checkbox", async () => {

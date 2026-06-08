@@ -1202,11 +1202,13 @@ function openSerialMonitorTerminal(port: string, baud: number): void {
   term.show();
 }
 
-export async function restoreSerialMonitors(monitors: ClosedSerialMonitor[], cfg: NodemcuConfig, signal?: AbortSignal): Promise<void> {
+const SERIAL_MONITOR_BAUD = 115200;
+
+export async function restoreSerialMonitors(monitors: ClosedSerialMonitor[], signal?: AbortSignal): Promise<void> {
   if (signal?.aborted || monitors.length === 0) return;
   const uniquePorts = Array.from(new Set(monitors.map((monitor) => monitor.port)));
   for (const port of uniquePorts) {
-    openSerialMonitorTerminal(port, cfg.nodemcu.baud);
+    openSerialMonitorTerminal(port, SERIAL_MONITOR_BAUD);
   }
 }
 
@@ -1216,7 +1218,7 @@ async function doOpenSerialMonitor(_signal?: AbortSignal): Promise<void> {
   const port = await ensurePort(cfg);
   if (!port) return;
   await closeSerialMonitors();
-  openSerialMonitorTerminal(port, cfg.nodemcu.baud);
+  openSerialMonitorTerminal(port, SERIAL_MONITOR_BAUD);
 }
 
 function buildDeviceExplorerProvider(): AsyncTreeProvider {

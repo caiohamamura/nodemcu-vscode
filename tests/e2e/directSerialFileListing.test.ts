@@ -3,7 +3,7 @@ import { SerialPort } from "serialport";
 import { DirectSerialUploader } from "../../src/upload/directSerialUploader";
 
 const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || (process.platform === "win32" ? "COM7" : "/dev/ttyUSB0");
-const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
+const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "460800");
 const RUN_HARDWARE_TEST = process.env.NODEMCU_VSCODE_E2E_DIRECT_SERIAL === "1";
 
 async function availablePortPaths(): Promise<string[]> {

@@ -46,11 +46,13 @@ class CDPClient {
     });
   }
 
-  evaluate(expression: string): Promise<any> {
-    return this.send("Runtime.evaluate", {
+  async evaluate(expression: string): Promise<any> {
+    const result: any = await this.send("Runtime.evaluate", {
       expression,
       returnByValue: true,
-    }).then((r: any) => r.result?.value);
+      awaitPromise: true,
+    });
+    return result.result?.value;
   }
 
   close() {
@@ -237,11 +239,11 @@ describe("E2E CDP: Transactional Sync", () => {
     fs.mkdirSync(firmwareDir, { recursive: true });
     const fakeFirmwareSrc = path.join(workspaceRoot, "tests", "fixtures", "fake-firmware");
     if (fs.existsSync(fakeFirmwareSrc)) {
-      const targetDir = path.join(firmwareDir, "mbedtls-2.28.10-beta");
+      const targetDir = path.join(firmwareDir, "luac_cross_optional");
       fs.cpSync(fakeFirmwareSrc, targetDir, { recursive: true });
       fs.writeFileSync(
         path.join(targetDir, ".nodemcu-vscode-managed-firmware.json"),
-        JSON.stringify({ tag: "mbedtls-2.28.10-beta", extractedAt: new Date().toISOString() }),
+        JSON.stringify({ tag: "luac_cross_optional", extractedAt: new Date().toISOString() }),
       );
     }
 
@@ -274,7 +276,7 @@ describe("E2E CDP: Transactional Sync", () => {
       "lua_number_integral=false",
       "lua_number_64bits=false",
       "port=",
-      "baud=115200",
+      "baud=460800",
       "upload_baud=460800",
       "flash_mode=dio",
       "flash_freq=80m",
