@@ -235,7 +235,7 @@ Actions:
           throw new Error("Missing command name. Usage: run-command <command-text>");
         }
         console.log(`Triggering command palette and executing: "${commandText}"`);
-        
+
         // Escape to clear any current quick input
         await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
         await client.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 27, key: "Escape", code: "Escape" });
@@ -303,7 +303,7 @@ Actions:
       case "capture-console": {
         console.log("Enabling Console log capture... Press Ctrl+C to exit.");
         await client.send("Log.enable");
-        
+
         client.onMessageCallback = (data) => {
           if (data.method === "Runtime.consoleAPICalled") {
             const argsList = data.params.args.map(arg => {
@@ -319,7 +319,7 @@ Actions:
         };
 
         // Keep process running persistently
-        await new Promise(() => {});
+        await new Promise(() => { });
         break;
       }
 

@@ -50,7 +50,6 @@ npm run typecheck    # tsc --noEmit (strict: noUnusedLocals, noUnusedParameters)
 npm run build        # esbuild bundles src/extension.ts → dist/extension.js (cjs, node18)
 npm run test:unit    # vitest run tests/unit  (165 tests, ~5s)
 npm run test:integration   # vitest run tests/integration  (26 tests, ~24s)
-npm run test:e2e     # spawns VS Code Extension Development Host; mostly skipped without hardware
 npm test             # runs all three
 npm run watch        # esbuild --watch
 npm run package      # npx @vscode/vsce package → .vsix
@@ -139,18 +138,6 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │   │   ├── configWatcher.test.ts
 │   │   ├── managers.test.ts        ← BuildManager, FlashManager, NodemcuTool
 │   │   └── moduleList.test.ts
-│   ├── e2e/                        ← requires real toolchain / hardware / IDE
-│   │   ├── build.test.ts           ← real CMake + nodemcu-firmware repo
-│   │   ├── cdp_e2e.test.ts         ← launches EDH, CDP drives UI
-│   │   ├── device.test.ts          ← real ESP8266 over USB
-│   │   └── device_cdp_e2e.test.ts  ← real device + CDP-driven EDH
-│   └── fixtures/
-│       └── fake-firmware/          ← minimal firmware tree for unit/integration tests
-│           ├── CMakeLists.txt
-│           ├── app/{coap,dht,u8g2lib,websocket}/{CMakeLists.txt or .c}
-│           ├── app/modules/{mqtt,wifi}.c
-│           ├── lua_modules/bh1750/{bh1750.lua,bh1750_Example1.lua}
-│           └── tools/toolchains/esptool.py
 │
 ├── resources/
 │   ├── icons/nodemcu.svg
@@ -162,9 +149,6 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │
 ├── .claude/SKILLS/                 ← custom Agent Skills (see §7)
 │   └── devtools-automation/        ← CDP-based UI automation for VS Code EDH
-│
-├── e2e-setup.js                    ← one-off setup: workspace + fake firmware (test-only)
-├── e2e-clean-setup.js              ← same as above but without seeded firmware
 │
 ├── dist/                           ← esbuild output (gitignored normally, but kept in
 │                                     .vscodeignore is configured to ship it — see §6.2)
@@ -275,8 +259,8 @@ lua_version = 53                 # 51 or 53
 lua_number_integral = false      # mutually exclusive with lua_number_64bits
 lua_number_64bits = false
 port =                           # e.g. /dev/ttyUSB0, COM3
-baud = 460800
-upload_baud = 460800
+baud = 115200
+upload_baud = 115200
 flash_mode = dio                 # dio|qio|dout|qout
 flash_freq = 40m                 # 40m|26m|20m|80m
 flash_size = 1M                  # 1M|4M|512K|... or "detect"/"keep"
@@ -391,31 +375,13 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
 `hookTimeout: 60_000`. The single-fork option is intentional so test files don't
 fight over `cwd` / `process.env` mutations.
 
-### 7.3 e2e suites
-
-| File | What it does | Skipped unless… |
-| --- | --- | --- |
-| `tests/e2e/build.test.ts` | Configures + builds with CMake, asserts `bin/0x00000.bin` and `bin/0x10000.bin` exist, checks incremental rebuild and C-module-add regenerate. | Real `cmake`, real `python`, sibling `../nodemcu-firmware` checkout with `CMakeLists.txt`. |
-| `tests/e2e/cdp_e2e.test.ts` | Spawns a fresh VS Code Extension Development Host with isolated `--user-data-dir` / `--extensions-dir` / `--remote-debugging-port`, seeds `tests/fixtures/fake-firmware` into `globalStorage`, injects a `fake-nodemcu-tool.js` via `NODEMCU_VSCODE_NODEMCU_TOOL` and `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` to fake COM42, then drives the UI through CDP. Asserts project init, view visibility, checkbox toggles, ini updates, `user_modules.h` regeneration, upload, refresh, delete. | Local VS Code install + `sumneko.lua` install (best effort). |
-| `tests/e2e/device.test.ts` | Builds, flashes, verifies chip-id pre/post, reads back firmware, runs REPL, incrementally rebuilds with new C module, checks banner lists module. | Real ESP8266, `../nodemcu-firmware`, cmake, python, esptool, `id -g` returns 20 (dialout group). |
-| `tests/e2e/device_cdp_e2e.test.ts` | Same as `device.test.ts` but uses CDP-driven Extension Development Host to run build / flash / upload / verify. | Real ESP8266, `../nodemcu-firmware`, cmake, python, esptool, the serial port exists, local VS Code install. |
-
-The e2e tests use a `beforeAll` / `afterAll` pattern with `HOLD_MS` env var
-(`NODEMCU_VSCODE_E2E_HOLD_MS`) to keep the Extension Development Host alive after
-the suite finishes — useful for live debugging.
-
 ### 7.4 Test-only environment variables
 
 | Variable | Consumed by | Effect |
 | --- | --- | --- |
-| `NODEMCU_VSCODE_NODEMCU_TOOL` | `NodemcuTool.command()` | Override path to the `nodemcu-tool` entry script. Used by `cdp_e2e.test.ts` to point at a fake. |
+| `NODEMCU_VSCODE_NODEMCU_TOOL` | `NodemcuTool.command()` | Override path to the `nodemcu-tool` entry script. Used for test injection. |
 | `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` | `SerialDiscovery.list()` | JSON array (`["/dev/ttyUSB0"]` or `[{path, manufacturer, ...}]`) returned in place of `serialport.SerialPort.list()`. |
 | `NODEMCU_VSCODE_FAKE_NODMCU_TOOL_STATE` | The bundled fake `nodemcu-tool.js` only | State dir for the fake device's "filesystem". |
-| `NODEMCU_VSCODE_E2E_CDP_PORT` | `cdp_e2e.test.ts` / `device_cdp_e2e.test.ts` | CDP remote debugging port (default 9237 / 9238). |
-| `NODEMCU_VSCODE_E2E_SERIAL_PORT` | `device_cdp_e2e.test.ts` | Serial port (default `/dev/ttyUSB0`). |
-| `NODEMCU_VSCODE_E2E_SERIAL_BAUD` | `device_cdp_e2e.test.ts` | Baud rate (default 115200). |
-| `NODEMCU_VSCODE_E2E_HOLD_MS` | both CDP e2e tests | Keep EDH alive after `afterAll`. |
-| `VSCODE_E2E_EXECUTABLE` | both CDP e2e tests | Override path to VS Code executable. |
 
 ---
 
@@ -459,7 +425,19 @@ node .claude/SKILLS/devtools-automation/scripts/cdp-control.js capture-console
 The skill at `.claude/SKILLS/devtools-automation/SKILL.md` is the canonical
 documentation; use the `skill` tool to load it.
 
-### 8.4 Avoid stale renderer state
+### 8.4 CDP DOM selectors (verified against real VS Code renderer)
+
+| Element | Selector | Notes |
+| --- | --- | --- |
+| Status bar (NodeMCU build/flash status) | `#undefined_publisher\.nodemcu-vscode > a` | ID contains `undefined_publisher` in EDH context; use `[id*="nodemcu-vscode"] a` for robustness |
+| Quick input box | `.quick-input-box input` | Also check `!!document.querySelector(...)` to detect if open |
+| Notification toasts | `.notifications-toasts .notification-toast` | `.visible` class indicates showing; Proceed/Cancel buttons are `.notification-toast .monaco-button` |
+| Proceed button (device UUID) | `.notification-toast .monaco-button` → `textContent.trim() === 'Proceed'` | Also works: `.monaco-dialog-box .monaco-button`, `.modal .monaco-button` |
+| Pane header aria-label | `.pane-header` → `getAttribute('aria-label')` | e.g. "Device Files Section", "Device Explorer Section" |
+| Monaco list rows | `.monaco-list-row` | Inside a `.pane` |
+| Checkboxes | `.monaco-checkbox` | `classList.contains('checked')` |
+
+### 8.5 Avoid stale renderer state
 
 CDP commands can target a stale Extension Development Host if you have several
 open. Before running, hit `http://127.0.0.1:<port>/json` and confirm the target's
@@ -568,39 +546,10 @@ against a running Extension Development Host. Use `node` scripts that evaluate
 simple JS expressions, click elements, and inspect state. Only after the manual
 path is fully understood should you encode it into a Vitest e2e suite.
 
-**Why.** CDP e2e tests are slow (minutes, not seconds) and have many gotchas
-that are invisible when writing blind:
-- AI splash / Welcome page blocks the renderer on fresh `--user-data-dir`
-- Notification toasts pop up asynchronously and intercept the next click target
-- `.name` / `.title` / `.pane-header` selectors differ between editor builds
-- Monaco editor accepts CDP key events only with `type: "keyDown"`, not `rawKeyDown`
-- DOM `.textContent` differs from visible text (non-breaking spaces, hidden elements)
-- `setTimeout` in evaluated expressions is not reliable — prefer polling
-
-**Workflow:**
-1. Launch a single EDH with `--remote-debugging-port=9230`
-2. Probe the UI with `node -e` or a lightweight script (`fetch` + `WebSocket`)
-3. Iterate selectors and timing until the flow works reliably
-4. Only then write the Vitest `beforeAll`/`it`/`afterAll` harness
-5. Run `npm run typecheck && npm run build` before launching the e2e
-
-This avoids spending 2+ minutes per test iteration discovering a selector bug
-that takes 10 seconds to find interactively.
-
-Also: never write CDP tests that exercise features that are already covered by
-unit or integration tests (e.g. `parseIni`, `uploadWithFallback` logic). CDP
-tests should only cover UI integration paths that cannot be tested without a
-real renderer.
-
 ### 9.9 Non-obvious gotchas
 
 - The `resources/templates/nodemcu.ini` still references the legacy
   `../nodemcu-firmware` default.
-- `tests/e2e/cdp_e2e.test.ts` is the contract that proves the runtime works.
-  Use it as a regression check after any change to `extension.ts`'s activation
-  flow.
-- The fake firmware under `tests/fixtures/fake-firmware/` does NOT contain the
-  patches; `ensureManagedFirmware` applies them on first call.
 - `git status` will routinely show `package-lock.json` as dirty because
   `pnpm-lock.yaml` and `bun.lock` are also committed. Don't "fix" this.
 - The repo is 14 commits ahead of `origin/main`; the user is iterating locally

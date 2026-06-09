@@ -10,6 +10,7 @@ interface ActiveOperation {
   name: string;
   controller: AbortController;
   done: Promise<void>;
+  critical: boolean;
 }
 
 function delay(ms: number): Promise<void> {
@@ -21,14 +22,17 @@ export class OperationGate {
 
   constructor(private hooks: OperationHooks, private options: OperationGateOptions = {}) {}
 
-  run<T>(name: string, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  run<T>(name: string, task: (signal: AbortSignal) => Promise<T>, critical = false): Promise<T> {
     if (this.active) {
+      if (this.active.critical) {
+        throw new Error(`Cannot interrupt critical operation: ${this.active.name}`);
+      }
       this.active.controller.abort();
     }
-    return this.start(name, task);
+    return this.start(name, task, critical);
   }
 
-  private async start<T>(name: string, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  private async start<T>(name: string, task: (signal: AbortSignal) => Promise<T>, critical: boolean): Promise<T> {
     const previous = this.active;
     if (previous) {
       const timeoutMs = this.options.interruptTimeoutMs ?? 3000;
@@ -47,7 +51,7 @@ export class OperationGate {
     const done = new Promise<void>((resolve) => {
       resolveDone = resolve;
     });
-    const current: ActiveOperation = { name, controller, done };
+    const current: ActiveOperation = { name, controller, done, critical };
     this.active = current;
 
     try {

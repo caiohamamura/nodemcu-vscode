@@ -1,7 +1,7 @@
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import type { SerialPort } from "./serialDiscovery";
 
-const NODEMCU_HINTS = ["nodemcu", "esp", "cp210", "ch340", "usb serial"];
+const NODEMCU_HINTS = ["nodemcu", "esp", "cp210", "ch340", "usb serial", "silicon labs"];
 
 export interface AutoPortSelection {
   port: string;

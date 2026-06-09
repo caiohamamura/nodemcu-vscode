@@ -50,14 +50,51 @@ export class SerialDiscovery {
     const r = await this.shell.run("powershell", [
       "-NoProfile",
       "-Command",
-      "[System.IO.Ports.SerialPort]::GetPortNames()",
+      `Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.DeviceID -like 'COM*' -or $_.Name -like '*COM*' } | ForEach-Object { $portMatch = $_.Name -match '\\((COM\\d+)\\)'; $port = if ($portMatch) { $Matches[1] } elseif ($_.DeviceID -match '(COM\\d+)') { $Matches[1] } else { $null }; if ($port) { "$port|$($_.Name)" } } | Sort-Object -Unique`,
     ]);
-    if (r.exitCode !== 0) return [];
-    return r.stdout
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && /^COM\d+/i.test(l))
-      .map((path) => ({ path }));
+    if (r.exitCode !== 0) {
+      const fallback = await this.shell.run("powershell", [
+        "-NoProfile",
+        "-Command",
+        "[System.IO.Ports.SerialPort]::GetPortNames()",
+      ]);
+      if (fallback.exitCode !== 0) return [];
+      return fallback.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && /^COM\d+/i.test(l))
+        .map((path) => ({ path }));
+    }
+    const ports: SerialPort[] = [];
+    const seen = new Set<string>();
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const [path, name] = trimmed.split("|", 2);
+      if (!path || !/^COM\d+/i.test(path)) continue;
+      const key = path.toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ports.push({ path, manufacturer: name || undefined });
+    }
+    if (ports.length === 0) {
+      const fallback = await this.shell.run("powershell", [
+        "-NoProfile",
+        "-Command",
+        "[System.IO.Ports.SerialPort]::GetPortNames()",
+      ]);
+      if (fallback.exitCode === 0) {
+        for (const line of fallback.stdout.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed || !/^COM\d+/i.test(trimmed)) continue;
+          const key = trimmed.toUpperCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          ports.push({ path: trimmed });
+        }
+      }
+    }
+    return ports;
   }
 
   private async globDevices(patterns: string[]): Promise<string[]> {

@@ -41,9 +41,9 @@ export class BuildManager {
     writeUserModulesHeader(headerPath, ctx.config);
     const after = readSelectedModules(headerPath);
     const diff = diffSelectedModules(before, after);
-    const needsReconfigure = diff.added.length > 0 || diff.removed.length > 0;
-
     const buildDir = defaultBuildDir(ctx.firmwarePath);
+    const buildDirMissing = !fs.existsSync(path.join(buildDir, "CMakeCache.txt"));
+    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0;
     if (needsReconfigure) {
       const modulesSrcDir = path.join(ctx.firmwarePath, "app", "modules");
       const appCMakeLists = path.join(ctx.firmwarePath, "app", "CMakeLists.txt");

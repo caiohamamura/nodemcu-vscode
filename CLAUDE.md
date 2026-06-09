@@ -21,7 +21,7 @@ env vars, handoff context) lives in **[AGENTS.md](AGENTS.md)** — read that fir
 ```bash
 npm run typecheck    # tsc --noEmit
 npm run build        # esbuild bundles src/extension.ts → dist/extension.js
-npm test             # unit + integration + e2e
+npm test             # unit + integration
 ```
 
 VS Code loads `dist/extension.js` (see `package.json#main`). Any change requires
@@ -44,5 +44,3 @@ This repo has custom Agent Skills under `.claude/SKILLS/`. See
 3. `serialport` is `external` in esbuild; never bundle it.
 4. The handoff context (what's broken right now) is in **AGENTS.md §9** —
    read it before changing `src/extension.ts`.
-5. The CDP e2e test (`tests/e2e/cdp_e2e.test.ts`) is the contract that proves
-   the runtime works. Run it after any change to activation flow.

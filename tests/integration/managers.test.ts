@@ -205,7 +205,7 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0 });
     const t = new NodemcuTool(shell as unknown as Shell);
     const r = await t.upload(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: true },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: true },
       "/local/foo.lua",
       "foo.lua",
       () => { },
@@ -224,7 +224,7 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0 });
     const t = new NodemcuTool(shell as unknown as Shell);
     const r = await t.download(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: false },
       "init.lua",
       "/local/init.lua",
       () => { },
@@ -240,7 +240,7 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0 });
     const t = new NodemcuTool(shell as unknown as Shell);
     const r = await t.uploadContent(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: false },
       Buffer.from("print('live')"),
       "init.lua",
       () => { },
@@ -256,7 +256,7 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0 });
     const t = new NodemcuTool(shell as unknown as Shell);
     const r = await t.remove(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: false },
       "init.lua",
       () => { },
     );
@@ -270,7 +270,7 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({ files: [{ name: "init.lua", size: 234 }, { name: "foo.lua", size: 100 }] }) });
     const t = new NodemcuTool(shell as unknown as Shell);
     const files = await t.listFiles(
-      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 460800, compile: false },
+      { python: "python", port: "/dev/ttyUSB0", baud: 115200, baudUpload: 115200, compile: false },
       () => { },
     );
     expect(shell.calls[0].command).toBe("node");
@@ -287,7 +287,7 @@ describe("NodemcuTool (integration, mocked shell)", () => {
     shell.nextResponse({ exitCode: 1, stderr: "Cannot open port COM7" });
     const t = new NodemcuTool(shell as unknown as Shell);
     const result = await t.listFilesResult(
-      { python: "python", port: "COM7", baud: 115200, baudUpload: 460800, compile: false },
+      { python: "python", port: "COM7", baud: 115200, baudUpload: 115200, compile: false },
       () => { },
     );
     expect(result.success).toBe(false);
@@ -307,41 +307,45 @@ describe("NodemcuTool transactional flow (mocked shell)", () => {
     // 1. Upload init.lua
     shell.nextResponse({ exitCode: 0, stdout: "Uploaded 1 file" });
     // 2. List files → shows init.lua
-    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
-      files: [{ name: "init.lua", size: 45 }],
-      total: { files: 1, used: 1024, total: 1048576 },
-    })});
+    shell.nextResponse({
+      exitCode: 0, stdout: JSON.stringify({
+        files: [{ name: "init.lua", size: 45 }],
+        total: { files: 1, used: 1024, total: 1048576 },
+      })
+    });
     // 3. Remove init.lua
     shell.nextResponse({ exitCode: 0, stdout: "Removed 1 file" });
     // 4. List files → empty
-    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
-      files: [],
-      total: { files: 0, used: 0, total: 1048576 },
-    })});
+    shell.nextResponse({
+      exitCode: 0, stdout: JSON.stringify({
+        files: [],
+        total: { files: 0, used: 0, total: 1048576 },
+      })
+    });
 
     const tool = new NodemcuTool(shell as unknown as Shell);
-    const opts = { python: "python", port: "COM42", baud: 115200, baudUpload: 460800, compile: false };
+    const opts = { python: "python", port: "COM42", baud: 115200, baudUpload: 115200, compile: false };
 
     const localPath = path.join(tmp, "init.lua");
     fs.writeFileSync(localPath, 'print("hello")\n');
 
     // Upload
-    const uploadResult = await tool.upload(opts, localPath, "init.lua", () => {});
+    const uploadResult = await tool.upload(opts, localPath, "init.lua", () => { });
     expect(uploadResult.success).toBe(true);
     expect(shell.calls[0].args).toContain("upload");
 
     // List → expect init.lua present
-    const filesAfterUpload = await tool.listFiles(opts, () => {});
+    const filesAfterUpload = await tool.listFiles(opts, () => { });
     expect(filesAfterUpload).toHaveLength(1);
     expect(filesAfterUpload[0].name).toBe("init.lua");
 
     // Remove
-    const removeResult = await tool.remove(opts, "init.lua", () => {});
+    const removeResult = await tool.remove(opts, "init.lua", () => { });
     expect(removeResult.success).toBe(true);
     expect(shell.calls[2].args).toContain("remove");
 
     // List → expect empty
-    const filesAfterRemove = await tool.listFiles(opts, () => {});
+    const filesAfterRemove = await tool.listFiles(opts, () => { });
     expect(filesAfterRemove).toHaveLength(0);
   });
 
@@ -352,20 +356,24 @@ describe("NodemcuTool transactional flow (mocked shell)", () => {
     // Upload b.lua
     shell.nextResponse({ exitCode: 0 });
     // List → both files
-    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
-      files: [{ name: "a.lua", size: 10 }, { name: "b.lua", size: 20 }],
-      total: { files: 2, used: 512, total: 1048576 },
-    })});
+    shell.nextResponse({
+      exitCode: 0, stdout: JSON.stringify({
+        files: [{ name: "a.lua", size: 10 }, { name: "b.lua", size: 20 }],
+        total: { files: 2, used: 512, total: 1048576 },
+      })
+    });
     // Remove a.lua (mimics onDidDeleteFiles)
     shell.nextResponse({ exitCode: 0 });
     // List → only b.lua
-    shell.nextResponse({ exitCode: 0, stdout: JSON.stringify({
-      files: [{ name: "b.lua", size: 20 }],
-      total: { files: 1, used: 256, total: 1048576 },
-    })});
+    shell.nextResponse({
+      exitCode: 0, stdout: JSON.stringify({
+        files: [{ name: "b.lua", size: 20 }],
+        total: { files: 1, used: 256, total: 1048576 },
+      })
+    });
 
     const tool = new NodemcuTool(shell as unknown as Shell);
-    const opts = { python: "python", port: "COM42", baud: 115200, baudUpload: 460800, compile: false };
+    const opts = { python: "python", port: "COM42", baud: 115200, baudUpload: 115200, compile: false };
 
     const aPath = path.join(tmp, "a.lua");
     const bPath = path.join(tmp, "b.lua");
@@ -373,23 +381,23 @@ describe("NodemcuTool transactional flow (mocked shell)", () => {
     fs.writeFileSync(bPath, "-- b\n");
 
     // Upload file a (like doUploadSingleFile after save)
-    let r = await tool.upload(opts, aPath, "a.lua", () => {});
+    let r = await tool.upload(opts, aPath, "a.lua", () => { });
     expect(r.success).toBe(true);
 
     // Upload file b (like doUploadSingleFile after another save)
-    r = await tool.upload(opts, bPath, "b.lua", () => {});
+    r = await tool.upload(opts, bPath, "b.lua", () => { });
     expect(r.success).toBe(true);
 
     // List files → both present
-    const files = await tool.listFiles(opts, () => {});
+    const files = await tool.listFiles(opts, () => { });
     expect(files).toHaveLength(2);
 
     // Remove file a (like handleFileDelete)
-    r = await tool.remove(opts, "a.lua", () => {});
+    r = await tool.remove(opts, "a.lua", () => { });
     expect(r.success).toBe(true);
 
     // List → only b remains
-    const remaining = await tool.listFiles(opts, () => {});
+    const remaining = await tool.listFiles(opts, () => { });
     expect(remaining).toHaveLength(1);
     expect(remaining[0].name).toBe("b.lua");
   });
@@ -402,9 +410,9 @@ describe("NodemcuTool transactional flow (mocked shell)", () => {
 
     const tool = new NodemcuTool(shell as unknown as Shell);
     const r = await tool.remove(
-      { python: "python", port: "COM42", baud: 115200, baudUpload: 460800, compile: false },
+      { python: "python", port: "COM42", baud: 115200, baudUpload: 115200, compile: false },
       "nonexistent.lua",
-      () => {},
+      () => { },
     );
     expect(r.success).toBe(true);
     expect(shell.calls[0].args).toContain("remove");

@@ -30,6 +30,7 @@ import { DirectSerialUploader } from "./upload/directSerialUploader";
 import { readDeviceIdentity, type DeviceIdentity } from "./device/deviceIdentity";
 import { planMirrorSync } from "./upload/srcMirror";
 import { StatusEmitter, type BuildState } from "./status/statusBar";
+import { PythonManager } from "./python/pythonManager";
 import { listLuaModulesFromFirmware, listCModules, type LuaModuleInfo, type CModuleInfo } from "./luaPicker/moduleList";
 import { createLuaModuleCompletionItem } from "./luaPicker/luaModuleCompletion";
 import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
@@ -135,6 +136,29 @@ let operationGate: OperationGate;
 let projectTasksProvider: AsyncTreeProvider;
 let srcSaveTimer: NodeJS.Timeout | undefined;
 let lastSavedUri: vscode.Uri | undefined;
+let pythonManager: PythonManager | undefined;
+
+function getPythonPath(): string {
+  if (pythonManager?.python) return pythonManager.python;
+  return vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") || "python";
+}
+
+async function ensurePython(context: vscode.ExtensionContext): Promise<void> {
+  if (pythonManager) return;
+  pythonManager = new PythonManager({
+    storagePath: context.globalStorageUri.fsPath,
+    systemPython: vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? undefined,
+    onProgress: (msg) => outputChannel?.appendLine(`[python] ${msg}`),
+  });
+  try {
+    await pythonManager.pythonPromise;
+    outputChannel?.appendLine(`[python] Using managed Python at ${pythonManager.python}`);
+  } catch (err) {
+    outputChannel?.appendLine(`[python] Managed Python setup failed: ${err}`);
+    outputChannel?.appendLine("[python] Falling back to system Python from PATH or setting.");
+    pythonManager = undefined;
+  }
+}
 
 export interface ClosedSerialMonitor {
   name: string;
@@ -223,7 +247,7 @@ async function getFirmwarePath(): Promise<string | null> {
       const fwPath = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "NodeMCU firmware", cancellable: false },
         async (progress) => ensureManagedFirmware({
-          storageRoot: extensionContext.globalStorageUri.fsPath,
+          storageRoot: path.join(os.tmpdir(), "nodemcu-vscode-firmware"),
           onProgress: (message) => progress.report({ message }),
         }),
       );
@@ -286,12 +310,13 @@ function showOperationLog(name: string): void {
 function commandWithOperation<T extends unknown[]>(
   name: string,
   fn: (signal: AbortSignal, ...args: T) => Promise<void> | void,
+  critical = false,
 ): (...args: T) => Promise<void> {
   return async (...args: T) => {
     showOperationLog(name);
     await operationGate.run(name, async (signal) => {
       await fn(signal, ...args);
-    });
+    }, critical);
   };
 }
 
@@ -453,7 +478,7 @@ async function doBuild(signal?: AbortSignal): Promise<void> {
     return;
   }
   setStatus("configuring", "configuring...");
-  const toolchain = await new ToolchainLocator(new Shell()).locate();
+  const toolchain = await new ToolchainLocator(new Shell(), getPythonPath()).locate();
   setStatus("building", "building...");
   const mgr = new BuildManager(new Shell());
   const result = await mgr.build({
@@ -489,30 +514,34 @@ async function doFlash(signal?: AbortSignal): Promise<void> {
   }
   const port = await ensurePort(cfg);
   if (!port) return;
-  await closeSerialMonitors();
-  const identity = await ensureKnownDevice(cfg, port, signal);
-  if (!identity.allowed) return;
-  setStatus("flashing", `flashing ${port}...`);
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
-  const mgr = new FlashManager(new Shell());
-  const r = await mgr.flash({
-    python,
-    firmwarePath: fw,
-    config: cfg,
-    port,
-    onLog: (s) => outputChannel.append(s),
-    onStderr: (s) => outputChannel.append(s),
-    signal,
-  });
-  if (r.success) {
-    setStatus("success", `flashed ${port}`);
-    vscode.window.showInformationMessage(`Flashed ${port} in ${r.durationMs}ms`);
-    if (identity.isNew) {
-      await mirrorSrcToDevice({ changedOnly: false, forceFormat: true, signal });
+  const monitors = await closeSerialMonitors();
+  try {
+    const identity = await ensureKnownDevice(cfg, port, signal);
+    if (!identity.allowed) return;
+    setStatus("flashing", `flashing ${port}...`);
+    const python = getPythonPath();
+    const mgr = new FlashManager(new Shell());
+    const r = await mgr.flash({
+      python,
+      firmwarePath: fw,
+      config: cfg,
+      port,
+      onLog: (s) => outputChannel.append(s),
+      onStderr: (s) => outputChannel.append(s),
+      signal,
+    });
+    if (r.success) {
+      setStatus("success", `flashed ${port}`);
+      vscode.window.showInformationMessage(`Flashed ${port} in ${r.durationMs}ms`);
+      if (identity.isNew) {
+        await mirrorSrcToDevice({ changedOnly: false, forceFormat: true, signal });
+      }
+    } else {
+      setStatus("error", `flash FAILED`);
+      vscode.window.showErrorMessage(`Flash failed (exit ${r.exitCode})`);
     }
-  } else {
-    setStatus("error", `flash FAILED`);
-    vscode.window.showErrorMessage(`Flash failed (exit ${r.exitCode})`);
+  } finally {
+    await restoreSerialMonitors(monitors, signal);
   }
 }
 
@@ -673,7 +702,7 @@ async function formatWithFallback(opts: NodemcuToolOptions): Promise<{ success: 
 }
 
 async function ensureKnownDevice(cfg: NodemcuConfig, port: string, signal?: AbortSignal): Promise<{ allowed: boolean; identity?: DeviceIdentity; isNew: boolean }> {
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const python = getPythonPath();
   const result = await readDeviceIdentity({ shell: new Shell(), python, port, baud: cfg.nodemcu.baud, signal });
   if (!result.success || !result.identity) {
     vscode.window.showErrorMessage(`Unable to identify attached NodeMCU device: ${result.error}`);
@@ -745,32 +774,33 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     }
   }
 
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const python = getPythonPath();
   const port = await ensurePort(cfg);
   if (!port) return;
-  await closeSerialMonitors();
-  const identity = await ensureKnownDevice(cfg, port, opts.signal);
-  if (!identity.allowed) return;
+  const monitors = await closeSerialMonitors();
+  try {
+    const identity = await ensureKnownDevice(cfg, port, opts.signal);
+    if (!identity.allowed) return;
 
-  const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal: opts.signal };
-  if (opts.forceFormat || identity.isNew) {
-    setStatus("uploading", `formatting ${port}...`);
-    const formatted = await formatWithFallback(toolOpts);
-    if (!formatted.success) {
-      setStatus("error", "format FAILED");
-      vscode.window.showErrorMessage(`Device filesystem format failed: ${formatted.error}`);
+    const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal: opts.signal };
+    if (opts.forceFormat || identity.isNew) {
+      setStatus("uploading", `formatting ${port}...`);
+      const formatted = await formatWithFallback(toolOpts);
+      if (!formatted.success) {
+        setStatus("error", "format FAILED");
+        vscode.window.showErrorMessage(`Device filesystem format failed: ${formatted.error}`);
+        return;
+      }
+    }
+
+    const remote = await listFilesWithFallback(toolOpts, false);
+    if (!remote.success) {
+      setStatus("error", "sync FAILED");
+      vscode.window.showErrorMessage(`Unable to list device files before sync: ${remote.error}`);
       return;
     }
-  }
 
-  const remote = await listFilesWithFallback(toolOpts, false);
-  if (!remote.success) {
-    setStatus("error", "sync FAILED");
-    vscode.window.showErrorMessage(`Unable to list device files before sync: ${remote.error}`);
-    return;
-  }
-
-  const uploadTimestamps = extensionContext
+    const uploadTimestamps = extensionContext
     ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
     : {};
   const plan = planMirrorSync({
@@ -826,6 +856,9 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     setStatus("success", `synced ${successCount} operation(s)`);
     vscode.window.showInformationMessage(`Synchronized src/ with ${port}.`);
   }
+  } finally {
+    await restoreSerialMonitors(monitors, opts.signal);
+  }
 }
 
 function updateSyncTimestamp(): void {
@@ -833,9 +866,11 @@ function updateSyncTimestamp(): void {
   if (!iniPath) return;
   const cfg = getConfigOrNull();
   if (!cfg) return;
-  cfg.sync.last_timestamp = new Date().toISOString();
+  const timestamp = new Date().toISOString();
+  cfg.sync.last_timestamp = timestamp;
   cachedConfig = cfg;
   saveConfig(iniPath, cfg);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Updated sync timestamp: ${timestamp}`);
 }
 
 async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: AbortSignal): Promise<void> {
@@ -855,25 +890,30 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
     }
   }
 
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const python = getPythonPath();
   const port = await ensurePort(cfg);
   if (!port) return;
-  await closeSerialMonitors();
-  const identity = await ensureKnownDevice(cfg, port, signal);
-  if (!identity.allowed) return;
+  const monitors = await closeSerialMonitors();
+  try {
+    const identity = await ensureKnownDevice(cfg, port, signal);
+    if (!identity.allowed) return;
 
-  const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+    const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
 
-  setStatus("uploading", `uploading ${remoteName}...`);
-  const result = await uploadWithFallback(toolOpts, uri.fsPath, remoteName);
+    setStatus("uploading", `uploading ${remoteName}...`);
+    const result = await uploadWithFallback(toolOpts, uri.fsPath, remoteName);
 
-  if (result.success) {
-    updateSyncTimestamp();
-    setStatus("success", `uploaded ${remoteName}`);
-    outputChannel.appendLine(`Uploaded ${remoteName}`);
-  } else {
+    if (result.success) {
+      await resetWithFallback(toolOpts);
+      updateSyncTimestamp();
+      setStatus("success", `uploaded ${remoteName}`);
+      outputChannel.appendLine(`Uploaded ${remoteName}`);
+    } else {
     setStatus("error", `upload FAILED: ${remoteName}`);
     outputChannel.appendLine(`Failed to upload ${remoteName}: ${result.error}`);
+  }
+  } finally {
+    await restoreSerialMonitors(monitors, signal);
   }
 }
 
@@ -888,28 +928,32 @@ async function handleFileDelete(event: vscode.FileDeleteEvent): Promise<void> {
   outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Handling file deletion...`);
 
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const python = getPythonPath();
   const port = await ensurePort(cfg);
   if (!port) return;
-  await closeSerialMonitors();
-  const identity = await ensureKnownDevice(cfg, port);
-  if (!identity.allowed) return;
+  const monitors = await closeSerialMonitors();
+  try {
+    const identity = await ensureKnownDevice(cfg, port);
+    if (!identity.allowed) return;
 
-  const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false };
+    const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false };
 
-  for (const uri of event.files) {
-    if (uri.scheme !== "file") continue;
-    const rel = path.relative(srcDir, uri.fsPath);
-    if (rel.length === 0 || rel.startsWith("..") || path.isAbsolute(rel)) continue;
-    const remoteName = rel.replace(/\\/g, "/");
-    setStatus("uploading", `removing ${remoteName}...`);
-    const result = await removeWithFallback(toolOpts, remoteName);
-    if (result.success) {
-      updateSyncTimestamp();
-      outputChannel.appendLine(`Removed ${remoteName}`);
-    } else {
-      outputChannel.appendLine(`Failed to remove ${remoteName}: ${result.error}`);
+    for (const uri of event.files) {
+      if (uri.scheme !== "file") continue;
+      const rel = path.relative(srcDir, uri.fsPath);
+      if (rel.length === 0 || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+      const remoteName = rel.replace(/\\/g, "/");
+      setStatus("uploading", `removing ${remoteName}...`);
+      const result = await removeWithFallback(toolOpts, remoteName);
+      if (result.success) {
+        updateSyncTimestamp();
+        outputChannel.appendLine(`Removed ${remoteName}`);
+      } else {
+        outputChannel.appendLine(`Failed to remove ${remoteName}: ${result.error}`);
+      }
     }
+  } finally {
+    void restoreSerialMonitors(monitors);
   }
 }
 
@@ -931,7 +975,8 @@ async function doRunFile(signal?: AbortSignal, item?: { remoteFile?: FileEntry; 
   if (!cfg) return;
   const port = await ensurePort(cfg);
   if (!port) return;
-  await closeSerialMonitors();
+  const monitors = await closeSerialMonitors();
+  try {
   let remoteName = item?.remoteFile?.name;
   if (!remoteName) {
     const fw = await getFirmwarePath();
@@ -944,7 +989,7 @@ async function doRunFile(signal?: AbortSignal, item?: { remoteFile?: FileEntry; 
     if (!pick) return;
     remoteName = pick.module.name + ".lua";
   }
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const python = getPythonPath();
   setStatus("uploading", `running ${remoteName}...`);
   const opts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
   const r = await runFileWithFallback(opts, remoteName);
@@ -955,6 +1000,9 @@ async function doRunFile(signal?: AbortSignal, item?: { remoteFile?: FileEntry; 
     setStatus("error", "run FAILED");
     vscode.window.showErrorMessage(`Failed to run ${remoteName}: ${r.error}`);
   }
+  } finally {
+    await restoreSerialMonitors(monitors, signal);
+  }
 }
 
 async function doResetDevice(signal?: AbortSignal): Promise<void> {
@@ -962,18 +1010,22 @@ async function doResetDevice(signal?: AbortSignal): Promise<void> {
   if (!cfg) return;
   const port = await ensurePort(cfg);
   if (!port) return;
-  await closeSerialMonitors();
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
-  setStatus("uploading", `resetting device...`);
-  const opts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
-  const r = await resetWithFallback(opts);
-  if (!r.success) {
-    setStatus("error", "reset FAILED");
-    vscode.window.showErrorMessage(`Failed to reset device: ${r.error}`);
-    return;
+  const monitors = await closeSerialMonitors();
+  try {
+    const python = getPythonPath();
+    setStatus("uploading", `resetting device...`);
+    const opts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+    const r = await resetWithFallback(opts);
+    if (!r.success) {
+      setStatus("error", "reset FAILED");
+      vscode.window.showErrorMessage(`Failed to reset device: ${r.error}`);
+      return;
+    }
+    setStatus("success", `reset device`);
+    vscode.window.showInformationMessage(`Reset device successfully.`);
+  } finally {
+    await restoreSerialMonitors(monitors, signal);
   }
-  setStatus("success", `reset device`);
-  vscode.window.showInformationMessage(`Reset device successfully.`);
 }
 
 async function doSyncLuaModules(signal?: AbortSignal): Promise<void> {
@@ -988,24 +1040,28 @@ async function doSyncLuaModules(signal?: AbortSignal): Promise<void> {
     vscode.window.showInformationMessage("No local Lua modules to sync.");
     return;
   }
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const python = getPythonPath();
   const port = await ensurePort(cfg);
   if (!port) return;
-  await closeSerialMonitors();
-  const identity = await ensureKnownDevice(cfg, port, signal);
-  if (!identity.allowed) return;
-  for (const m of local) {
-    setStatus("uploading", `uploading ${m.name}...`);
-    const r = await uploadWithFallback(
-      { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: true, signal },
-      m.resolvedLocalPath!,
-      m.name + ".lc",
-    );
-    if (!r.success) {
-      vscode.window.showErrorMessage(`Failed to upload ${m.name}: ${r.error}`);
+  const monitors = await closeSerialMonitors();
+  try {
+    const identity = await ensureKnownDevice(cfg, port, signal);
+    if (!identity.allowed) return;
+    for (const m of local) {
+      setStatus("uploading", `uploading ${m.name}...`);
+      const r = await uploadWithFallback(
+        { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: true, signal },
+        m.resolvedLocalPath!,
+        m.name + ".lc",
+      );
+      if (!r.success) {
+        vscode.window.showErrorMessage(`Failed to upload ${m.name}: ${r.error}`);
+      }
     }
+    setStatus("success", `synced ${local.length} module(s)`);
+  } finally {
+    await restoreSerialMonitors(monitors, signal);
   }
-  setStatus("success", `synced ${local.length} module(s)`);
 }
 
 async function doAcceptLuaModuleCompletion(signal: AbortSignal | undefined, moduleName: string, source: string): Promise<void> {
@@ -1193,7 +1249,7 @@ export async function closeSerialMonitors(): Promise<ClosedSerialMonitor[]> {
 }
 
 function openSerialMonitorTerminal(port: string, baud: number): void {
-  const python = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? "python";
+  const python = getPythonPath();
   const term = vscode.window.createTerminal({
     name: `NodeMCU: ${port}`,
     shellPath: python,
@@ -1206,6 +1262,9 @@ const SERIAL_MONITOR_BAUD = 115200;
 
 export async function restoreSerialMonitors(monitors: ClosedSerialMonitor[], signal?: AbortSignal): Promise<void> {
   if (signal?.aborted || monitors.length === 0) return;
+  if (process.platform === "win32") {
+    await new Promise(r => setTimeout(r, 1500));
+  }
   const uniquePorts = Array.from(new Set(monitors.map((monitor) => monitor.port)));
   for (const port of uniquePorts) {
     openSerialMonitorTerminal(port, SERIAL_MONITOR_BAUD);
@@ -1377,12 +1436,13 @@ function scheduleSrcSync(document: vscode.TextDocument): void {
     const currentCfg = getConfigOrNull();
     if (!currentCfg) return;
     outputChannel.show(true);
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] scheduleSrcSync: last_timestamp=${currentCfg.sync.last_timestamp || '(empty)'}`);
     if (currentCfg.sync.last_timestamp) {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, uploading single file...`);
-      void operationGate.run("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal));
+      void operationGate.run("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal), true);
     } else {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, performing full sync...`);
-      void operationGate.run("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal }));
+      void operationGate.run("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal }), true);
     }
   }, 300);
 }
@@ -1390,6 +1450,7 @@ function scheduleSrcSync(document: vscode.TextDocument): void {
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
   outputChannel = vscode.window.createOutputChannel("NodeMCU");
+  void ensurePython(context);
   operationGate = new OperationGate({
     onInterrupt: async (previousName: string) => {
       outputChannel.appendLine(`\n[${new Date().toLocaleTimeString()}] Interrupting: ${previousName}`);
@@ -1492,11 +1553,11 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("nodemcu-vscode.initProject", doInitProject),
     vscode.commands.registerCommand("nodemcu-vscode.build", commandWithOperation("Build Firmware", doBuild)),
-    vscode.commands.registerCommand("nodemcu-vscode.flash", commandWithOperation("Flash Firmware", doFlash)),
-    vscode.commands.registerCommand("nodemcu-vscode.buildAndFlash", commandWithOperation("Build & Flash", doBuildAndFlash)),
-    vscode.commands.registerCommand("nodemcu-vscode.uploadFile", commandWithOperation("Upload File", doUploadFile)),
-    vscode.commands.registerCommand("nodemcu-vscode.uploadChanges", commandWithOperation("Upload Changes", doUploadChanges)),
-    vscode.commands.registerCommand("nodemcu-vscode.uploadAndMonitor", commandWithOperation("Upload & Monitor", doUploadAndMonitor)),
+    vscode.commands.registerCommand("nodemcu-vscode.flash", commandWithOperation("Flash Firmware", doFlash, true)),
+    vscode.commands.registerCommand("nodemcu-vscode.buildAndFlash", commandWithOperation("Build & Flash", doBuildAndFlash, true)),
+    vscode.commands.registerCommand("nodemcu-vscode.uploadFile", commandWithOperation("Upload File", doUploadFile, true)),
+    vscode.commands.registerCommand("nodemcu-vscode.uploadChanges", commandWithOperation("Upload Changes", doUploadChanges, true)),
+    vscode.commands.registerCommand("nodemcu-vscode.uploadAndMonitor", commandWithOperation("Upload & Monitor", doUploadAndMonitor, true)),
     vscode.commands.registerCommand("nodemcu-vscode.runFile", commandWithOperation("Run File", doRunFile)),
     vscode.commands.registerCommand("nodemcu-vscode.resetDevice", commandWithOperation("Reset Device", doResetDevice)),
     vscode.commands.registerCommand("nodemcu-vscode.syncLuaModules", commandWithOperation("Sync Lua Modules", doSyncLuaModules)),

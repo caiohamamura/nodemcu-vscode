@@ -1,12 +1,18 @@
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import * as os from "node:os";
+import * as child_process from "node:child_process";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import extract from "extract-zip";
 
 export const MANAGED_FIRMWARE_TAG = "luac_cross_optional";
 export const MANAGED_FIRMWARE_URL = `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/${MANAGED_FIRMWARE_TAG}.zip`;
+
+const TOOLCHAIN_TARBALL = "xtensa-lx106-elf-win32-1.22.0-88-gde0bdc1-4.8.5.tar.gz";
+const TOOLCHAIN_URL = `https://dl.espressif.com/dl/${TOOLCHAIN_TARBALL}`;
+const TOOLCHAIN_DIR = `esp8266-xtensa-lx106-elf-win32-1.22.0-88-gde0bdc1-4.8.5`;
 
 const MARKER_FILE = ".nodemcu-vscode-managed-firmware.json";
 const NEWLIB_COMPAT_SOURCE = path.join("app", "nodemcu-vscode-newlib.c");
@@ -42,6 +48,7 @@ export async function ensureManagedFirmware(opts: EnsureManagedFirmwareOptions):
   if (isUsableExtractedFirmwareRoot(root)) {
     opts.onProgress?.("Finalizing managed firmware");
     await applyCompatibilityPatches(root);
+    await preExtractToolchain(root, opts.onProgress);
     await writeMarker(markerPath);
     return root;
   }
@@ -75,6 +82,7 @@ export async function ensureManagedFirmware(opts: EnsureManagedFirmwareOptions):
 
     await hydrateSubmodules(root, tempRoot, opts.onProgress);
     await applyCompatibilityPatches(root);
+    await preExtractToolchain(root, opts.onProgress);
 
     await writeMarker(markerPath);
     return root;
@@ -235,5 +243,42 @@ async function copyDirectory(src: string, dest: string): Promise<void> {
     } else {
       await fsp.copyFile(from, to);
     }
+  }
+}
+
+async function preExtractToolchain(firmwareRoot: string, onProgress?: (msg: string) => void): Promise<void> {
+  const toolchainDir = path.join(firmwareRoot, "tools", "toolchains", TOOLCHAIN_DIR);
+  if (fs.existsSync(path.join(toolchainDir, "bin"))) return;
+
+  const isWindows = os.platform() === "win32";
+  if (!isWindows) return; // Linux toolchain is different; let cmake handle it
+
+  onProgress?.("Pre-extracting ESP8266 toolchain (cmake 4.x compat)");
+
+  const toolsDir = path.join(firmwareRoot, "tools", "toolchains");
+  await fsp.mkdir(toolsDir, { recursive: true });
+
+  const tarballPath = path.join(toolsDir, TOOLCHAIN_TARBALL);
+  if (!fs.existsSync(tarballPath)) {
+    onProgress?.(`Downloading ${TOOLCHAIN_TARBALL}`);
+    await downloadFile(TOOLCHAIN_URL, tarballPath);
+  }
+
+  await fsp.mkdir(toolchainDir, { recursive: true });
+
+  try {
+    child_process.execFileSync("tar", ["-xzf", tarballPath, "-C", toolchainDir, "--strip-components=1"], {
+      windowsHide: true,
+      stdio: "pipe",
+    });
+  } catch (err) {
+    // If tar fails, cmake's FetchContent will try during configure
+    onProgress?.(`Toolchain pre-extraction failed, will fall back to cmake: ${err}`);
+    return;
+  }
+
+  if (fs.existsSync(path.join(toolchainDir, "bin"))) {
+    await fsp.unlink(tarballPath).catch(() => {});
+    onProgress?.("Toolchain pre-extracted successfully");
   }
 }
