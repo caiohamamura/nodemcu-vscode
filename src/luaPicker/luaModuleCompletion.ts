@@ -1,16 +1,18 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { LuaModuleInfo } from "./moduleList";
+import { selectMainFileForConfig } from "./moduleList";
 
 export function luaModuleRequireText(moduleName: string): string {
   return `${moduleName} = require("${moduleName}")`;
 }
 
-export function luaModuleSource(module: LuaModuleInfo): string {
-  return `lua_modules/${module.name}/${path.basename(module.mainFile)}`;
+export function luaModuleSource(module: LuaModuleInfo, config?: { lua_number_integral?: boolean }): string {
+  const mainFile = selectMainFileForConfig(module, config);
+  return `lua_modules/${module.name}/${path.basename(mainFile)}`;
 }
 
-export function createLuaModuleCompletionItem(module: LuaModuleInfo): vscode.CompletionItem {
+export function createLuaModuleCompletionItem(module: LuaModuleInfo, config?: { lua_number_integral?: boolean }): vscode.CompletionItem {
   const item = new vscode.CompletionItem(module.name, vscode.CompletionItemKind.Module);
   item.detail = "NodeMCU Lua module";
   item.documentation = module.description || `Enable and require ${module.name}`;
@@ -20,7 +22,7 @@ export function createLuaModuleCompletionItem(module: LuaModuleInfo): vscode.Com
   item.command = {
     command: "nodemcu-vscode.acceptLuaModuleCompletion",
     title: "Enable and sync Lua module",
-    arguments: [module.name, luaModuleSource(module)],
+    arguments: [module.name, luaModuleSource(module, config)],
   };
   return item;
 }

@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as child_process from "node:child_process";
 import { Shell } from "./util/shell";
-import { OperationGate } from "./util/operationGate";
+import { CommandQueue } from "./util/commandQueue";
 import {
   defaultConfig,
   loadConfig,
@@ -32,7 +32,7 @@ import { readDeviceFirmwareInfo } from "./device/deviceFirmwareInfo";
 import { planMirrorSync } from "./upload/srcMirror";
 import { StatusEmitter, type BuildState, type StatusUpdate } from "./status/statusBar";
 import { PythonManager } from "./python/pythonManager";
-import { listLuaModulesFromFirmware, listCModules, type LuaModuleInfo, type CModuleInfo } from "./luaPicker/moduleList";
+import { listLuaModulesFromFirmware, listCModules, selectMainFileForConfig, type LuaModuleInfo, type CModuleInfo } from "./luaPicker/moduleList";
 import { createLuaModuleCompletionItem } from "./luaPicker/luaModuleCompletion";
 import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
 import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
@@ -41,6 +41,7 @@ import { ensureManagedFirmware } from "./firmware/managedFirmware";
 let outputChannel: vscode.OutputChannel;
 let statusEmitter: StatusEmitter;
 let portStatusBarItem: vscode.StatusBarItem;
+let queueStatusBarItem: vscode.StatusBarItem;
 let watcher: ConfigWatcher | undefined;
 let cachedConfig: NodemcuConfig | null = null;
 let cachedFirmwarePath: string | null = null;
@@ -132,7 +133,7 @@ let deviceExplorerProvider: AsyncTreeProvider;
 let luaModulesProvider: AsyncTreeProvider;
 let cModulesProvider: AsyncTreeProvider;
 let portRefreshTimer: NodeJS.Timeout | undefined;
-let operationGate: OperationGate;
+let commandQueue: CommandQueue;
 let projectTasksProvider: AsyncTreeProvider;
 let srcSaveTimer: NodeJS.Timeout | undefined;
 let lastSavedUri: vscode.Uri | undefined;
@@ -356,16 +357,47 @@ function showOperationLog(name: string): void {
   outputChannel.appendLine(`\n[${new Date().toISOString()}] Starting ${name}`);
 }
 
+function updateQueueStatusBar(): void {
+  if (!queueStatusBarItem) return;
+  const state = commandQueue.getState();
+  if (state.running) {
+    const pendingCount = state.pending.length;
+    queueStatusBarItem.text = pendingCount > 0
+      ? `$(sync~spin) ${state.running.name} | ${pendingCount} queued`
+      : `$(sync~spin) ${state.running.name}`;
+    queueStatusBarItem.tooltip = pendingCount > 0
+      ? `Running: ${state.running.name}\nQueued: ${state.pending.map((p) => p.name).join(", ")}`
+      : `Running: ${state.running.name}`;
+    queueStatusBarItem.show();
+  } else {
+    queueStatusBarItem.hide();
+  }
+}
+
 function commandWithOperation<T extends unknown[]>(
   name: string,
   fn: (signal: AbortSignal, ...args: T) => Promise<void> | void,
-  critical = false,
 ): (...args: T) => Promise<void> {
   return async (...args: T) => {
     showOperationLog(name);
-    await operationGate.run(name, async (signal) => {
+    const state = commandQueue.getState();
+    const wasQueued = state.running !== null;
+    if (wasQueued) {
+      const position = state.pending.length + 1;
+      outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] ${name} queued (position ${position})`);
+      void vscode.window.showInformationMessage(
+        `NodeMCU: ${name} queued (${position} in queue). Running: ${state.running!.name}`,
+        "Cancel Queued",
+      ).then((choice) => {
+        if (choice === "Cancel Queued") {
+          commandQueue.cancelPending();
+          outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Queued commands cancelled by user`);
+        }
+      });
+    }
+    await commandQueue.enqueue(name, async (signal) => {
       await fn(signal, ...args);
-    }, critical);
+    });
   };
 }
 
@@ -1126,33 +1158,35 @@ async function handleFileDelete(event: vscode.FileDeleteEvent): Promise<void> {
   outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Handling file deletion...`);
 
-  const python = getPythonPath();
-  const port = await ensurePort(cfg);
-  if (!port) return;
-  const monitors = await closeSerialMonitors();
-  try {
-    const identity = await ensureKnownDevice(cfg, port);
-    if (!identity.allowed) return;
+  await commandQueue.enqueue("Delete file", async (signal) => {
+    const python = getPythonPath();
+    const port = await ensurePort(cfg);
+    if (!port) return;
+    const monitors = await closeSerialMonitors();
+    try {
+      const identity = await ensureKnownDevice(cfg, port, signal);
+      if (!identity.allowed) return;
 
-    const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false };
+      const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
 
-    for (const uri of event.files) {
-      if (uri.scheme !== "file") continue;
-      const rel = path.relative(srcDir, uri.fsPath);
-      if (rel.length === 0 || rel.startsWith("..") || path.isAbsolute(rel)) continue;
-      const remoteName = rel.replace(/\\/g, "/");
-      setStatus("uploading", `removing ${remoteName}...`);
-      const result = await removeWithFallback(toolOpts, remoteName);
-      if (result.success) {
-        updateSyncTimestamp();
-        outputChannel.appendLine(`Removed ${remoteName}`);
-      } else {
-        outputChannel.appendLine(`Failed to remove ${remoteName}: ${result.error}`);
+      for (const uri of event.files) {
+        if (uri.scheme !== "file") continue;
+        const rel = path.relative(srcDir, uri.fsPath);
+        if (rel.length === 0 || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+        const remoteName = rel.replace(/\\/g, "/");
+        setStatus("uploading", `removing ${remoteName}...`);
+        const result = await removeWithFallback(toolOpts, remoteName);
+        if (result.success) {
+          updateSyncTimestamp();
+          outputChannel.appendLine(`Removed ${remoteName}`);
+        } else {
+          outputChannel.appendLine(`Failed to remove ${remoteName}: ${result.error}`);
+        }
       }
+    } finally {
+      void restoreSerialMonitors(monitors, signal);
     }
-  } finally {
-    void restoreSerialMonitors(monitors);
-  }
+  });
 }
 
 async function doUploadFile(signal?: AbortSignal, uri?: vscode.Uri): Promise<void> {
@@ -1327,7 +1361,8 @@ async function doAddLuaModule(item?: { module: LuaModuleInfo }): Promise<void> {
     );
   }
   if (!pick) return;
-  const newCfg = setLuaModule(cfg, pick.label, `lua_modules/${pick.label}/${path.basename(pick.module.mainFile)}`);
+  const selectedFile = selectMainFileForConfig(pick.module, cfg.nodemcu);
+  const newCfg = setLuaModule(cfg, pick.label, `lua_modules/${pick.label}/${path.basename(selectedFile)}`);
   const iniPath = existingIniPath();
   if (iniPath) {
     cachedConfig = newCfg;
@@ -1611,8 +1646,9 @@ class LuaModuleCompletionProvider implements vscode.CompletionItemProvider {
   async provideCompletionItems(): Promise<vscode.CompletionItem[]> {
     const fw = await getFirmwarePath();
     if (!fw) return [];
+    const cfg = getConfigOrNull();
     const modules = await listLuaModulesFromFirmware(fw);
-    return modules.map(createLuaModuleCompletionItem);
+    return modules.map((m) => createLuaModuleCompletionItem(m, cfg?.nodemcu));
   }
 }
 
@@ -1632,10 +1668,10 @@ function scheduleSrcSync(document: vscode.TextDocument): void {
     outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] scheduleSrcSync: last_timestamp=${currentCfg.sync.last_timestamp || '(empty)'}`);
     if (currentCfg.sync.last_timestamp) {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, uploading single file...`);
-      void operationGate.run("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal), true);
+      void commandQueue.enqueue("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal));
     } else {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, performing full sync...`);
-      void operationGate.run("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal }), true);
+      void commandQueue.enqueue("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal }));
     }
   }, 300);
 }
@@ -1644,18 +1680,15 @@ export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
   outputChannel = vscode.window.createOutputChannel("NodeMCU");
   void ensurePython(context);
-  operationGate = new OperationGate({
-    onInterrupt: async (previousName: string) => {
-      outputChannel.appendLine(`\n[${new Date().toLocaleTimeString()}] Interrupting: ${previousName}`);
-      setStatus("uploading", `Interrupting ${previousName}...`);
-      await closeSerialMonitors();
-    },
-  });
+  commandQueue = new CommandQueue();
   statusEmitter = new StatusEmitter();
   portStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
   portStatusBarItem.command = "nodemcu-vscode.selectPort";
+  queueStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+  queueStatusBarItem.command = "nodemcu-vscode.cancelQueued";
+  commandQueue.on("change", () => updateQueueStatusBar());
 
-  context.subscriptions.push(portStatusBarItem, outputChannel);
+  context.subscriptions.push(portStatusBarItem, queueStatusBarItem, outputChannel);
   setStatus("idle", "NodeMCU: idle");
 
   deviceExplorerProvider = buildDeviceExplorerProvider();
@@ -1743,16 +1776,20 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("nodemcu-vscode.initProject", doInitProject),
     vscode.commands.registerCommand("nodemcu-vscode.build", commandWithOperation("Build Firmware", doBuild)),
-    vscode.commands.registerCommand("nodemcu-vscode.flash", commandWithOperation("Flash Firmware", doFlash, true)),
-    vscode.commands.registerCommand("nodemcu-vscode.buildAndFlash", commandWithOperation("Build & Flash", doBuildAndFlash, true)),
-    vscode.commands.registerCommand("nodemcu-vscode.uploadFile", commandWithOperation("Upload File", doUploadFile, true)),
-    vscode.commands.registerCommand("nodemcu-vscode.uploadChanges", commandWithOperation("Upload Changes", doUploadChanges, true)),
-    vscode.commands.registerCommand("nodemcu-vscode.uploadAndMonitor", commandWithOperation("Upload & Monitor", doUploadAndMonitor, true)),
+    vscode.commands.registerCommand("nodemcu-vscode.flash", commandWithOperation("Flash Firmware", doFlash)),
+    vscode.commands.registerCommand("nodemcu-vscode.buildAndFlash", commandWithOperation("Build & Flash", doBuildAndFlash)),
+    vscode.commands.registerCommand("nodemcu-vscode.uploadFile", commandWithOperation("Upload File", doUploadFile)),
+    vscode.commands.registerCommand("nodemcu-vscode.uploadChanges", commandWithOperation("Upload Changes", doUploadChanges)),
+    vscode.commands.registerCommand("nodemcu-vscode.uploadAndMonitor", commandWithOperation("Upload & Monitor", doUploadAndMonitor)),
     vscode.commands.registerCommand("nodemcu-vscode.runFile", commandWithOperation("Run File", doRunFile)),
     vscode.commands.registerCommand("nodemcu-vscode.resetDevice", commandWithOperation("Reset Device", doResetDevice)),
     vscode.commands.registerCommand("nodemcu-vscode.syncLuaModules", commandWithOperation("Sync Lua Modules", doSyncLuaModules)),
     vscode.commands.registerCommand("nodemcu-vscode.acceptLuaModuleCompletion", commandWithOperation("Accept Lua Module", doAcceptLuaModuleCompletion)),
     vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", commandWithOperation("Open Serial Monitor", doOpenSerialMonitor)),
+    vscode.commands.registerCommand("nodemcu-vscode.cancelQueued", () => {
+      commandQueue.cancelPending();
+      outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Queued commands cancelled`);
+    }),
     vscode.commands.registerCommand("nodemcu-vscode.regenerateLuaApi", doRegenerateLuaApi),
     vscode.commands.registerCommand("nodemcu-vscode.addLuaModule", doAddLuaModule),
     vscode.commands.registerCommand("nodemcu-vscode.toggleLuaModule", doToggleLuaModule),

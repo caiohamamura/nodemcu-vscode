@@ -119,22 +119,33 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │   ├── upload/
 │   │   └── nodemcuTool.ts          ← wraps nodemcu-tool (upload/download/remove/fsinfo)
 │   └── util/
+│       ├── commandQueue.ts         ← FIFO command queue with cancel support
 │       ├── paths.ts                ← firmware-relative path helpers
 │       └── shell.ts                ← spawn wrapper with onStdout/onStderr + quoting
 │
 ├── tests/
-│   ├── unit/                       ← fast, no I/O outside tmp dirs (10 files, 87 tests)
+│   ├── unit/                       ← fast, no I/O outside tmp dirs (20 files, 173 tests)
 │   │   ├── apiFiles.test.ts
+│   │   ├── asyncTreeProvider.test.ts
+│   │   ├── autoPort.test.ts
+│   │   ├── commandQueue.test.ts
+│   │   ├── deviceIdentity.test.ts
+│   │   ├── directSerialUploader.test.ts
+│   │   ├── liveEditFs.test.ts
+│   │   ├── liveEditSave.test.ts
+│   │   ├── luaModuleCompletion.test.ts
 │   │   ├── luaModuleResolver.test.ts
 │   │   ├── managedFirmware.test.ts
 │   │   ├── nodemcuIni.test.ts
 │   │   ├── outputParser.test.ts
 │   │   ├── packageManifest.test.ts
 │   │   ├── paths.test.ts
+│   │   ├── serialMonitorLifecycle.test.ts
 │   │   ├── shell.test.ts
+│   │   ├── srcMirror.test.ts
 │   │   ├── toolchain.test.ts
 │   │   └── userModulesWriter.test.ts
-│   ├── integration/                ← fakes the shell (3 files, 19 tests)
+│   ├── integration/                ← fakes the shell (3 files, 26 tests)
 │   │   ├── configWatcher.test.ts
 │   │   ├── managers.test.ts        ← BuildManager, FlashManager, NodemcuTool
 │   │   └── moduleList.test.ts

@@ -46,7 +46,8 @@
     "onCommand:nodemcu-vscode.regenerateLuaApi",
     "onCommand:nodemcu-vscode.openIni",
     "onCommand:nodemcu-vscode.openSerialMonitor",
-    "onCommand:nodemcu-vscode.selectPort"
+    "onCommand:nodemcu-vscode.selectPort",
+    "onCommand:nodemcu-vscode.cancelQueued"
   ],
   "contributes": {
     "viewsContainers": {
@@ -176,6 +177,11 @@
       {
         "command": "nodemcu-vscode.selectPort",
         "title": "Select Port",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.cancelQueued",
+        "title": "Cancel Queued Commands",
         "category": "NodeMCU"
       }
     ],

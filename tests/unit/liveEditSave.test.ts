@@ -1,30 +1,20 @@
 /**
- * Integration tests for the OperationGate + live-edit save wiring.
+ * Integration tests for the CommandQueue + live-edit save wiring.
  *
- * These tests replicate the logic in extension.ts lines 1640-1643:
+ * These tests replicate the logic in extension.ts where onDidSaveTextDocument
+ * enqueues upload tasks via commandQueue.enqueue().
  *
- *   vscode.workspace.onDidSaveTextDocument((doc) => {
- *     if (doc.uri.scheme === LIVE_EDIT_SCHEME) {
- *       void operationGate.run("Save Live Device File", (signal) =>
- *         uploadLiveDocument(doc, signal));
- *     }
- *   });
- *
- * Without launching a real VS Code host we exercise:
- *   1. Two rapid saves → second aborts the first; upload is called with the
- *      content of the *second* document.
- *   2. The AbortSignal received by the upload function is the one owned by
- *      the gate (i.e. it is aborted when the third command preempts).
+ * With the CommandQueue (FIFO, no interruption):
+ *   1. Two rapid saves → both run sequentially; both uploads commit.
+ *   2. The AbortSignal received by the upload task is NOT aborted by a new
+ *      enqueue — only by explicit cancelRunning().
  *   3. Calling an unrelated command (e.g. "Upload File") while a live-edit
- *      save is in progress interrupts the save and lets the command proceed.
+ *      save is in progress queues it; it runs after the current save finishes.
+ *   4. cancelPending() rejects queued saves but lets the running one complete.
  */
 
 import { describe, it, expect } from "vitest";
-import { OperationGate } from "../../src/util/operationGate";
-
-// ---------------------------------------------------------------------------
-// Helpers – lightweight stand-ins for the extension's upload infrastructure
-// ---------------------------------------------------------------------------
+import { CommandQueue } from "../../src/util/commandQueue";
 
 interface FakeDoc {
   content: string;
@@ -32,187 +22,171 @@ interface FakeDoc {
   port: string;
 }
 
-/** Builds a gate identical to the one in extension.ts activate(). */
-function makeGate(interruptLog: string[] = []) {
-  return new OperationGate({
-    onInterrupt: async (name) => {
-      interruptLog.push(name);
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe("OperationGate + live-edit save wiring", () => {
-  // -------------------------------------------------------------------------
-  // 1. Double-save: second save wins
-  // -------------------------------------------------------------------------
-  it("second save interrupts the first and the upload receives the second document's content", async () => {
-    const calls: Array<{ content: string; remoteName: string; signal: AbortSignal }> = [];
-    const interruptLog: string[] = [];
-    const gate = makeGate(interruptLog);
-
-    let releaseFirstUpload!: () => void;
-    const stallForFirst = new Promise<void>((r) => { releaseFirstUpload = r; });
+describe("CommandQueue + live-edit save wiring", () => {
+  it("two rapid saves: both run sequentially and both uploads commit", async () => {
+    const calls: Array<{ content: string; remoteName: string }> = [];
+    const queue = new CommandQueue();
 
     const docA: FakeDoc = { content: "v1", remoteName: "init.lua", port: "COM7" };
     const docB: FakeDoc = { content: "v2", remoteName: "init.lua", port: "COM7" };
 
-    // Simulate saving docA — upload stalls until we release it
-    const saveA = gate.run("Save Live Device File", async (signal) => {
-      calls.push({ content: docA.content, remoteName: docA.remoteName, signal });
-      await stallForFirst; // slow upload
-      if (!signal.aborted) calls[0].content = "v1-committed";
+    const saveA = queue.enqueue("Save Live Device File", async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      calls.push({ content: docA.content, remoteName: docA.remoteName });
     });
 
-    // Let docA's upload task start
-    await new Promise((r) => setTimeout(r, 5));
-
-    // Simulate saving docB — this should abort saveA
-    const saveB = gate.run("Save Live Device File", async (signal) => {
-      calls.push({ content: docB.content, remoteName: docB.remoteName, signal });
+    const saveB = queue.enqueue("Save Live Device File", async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      calls.push({ content: docB.content, remoteName: docB.remoteName });
     });
 
-    // Let the gate interrupt and saveB complete
-    releaseFirstUpload(); // unblock saveA so it can finish and give way
-    await Promise.allSettled([saveA, saveB]);
+    await Promise.all([saveA, saveB]);
 
-    // The interrupt was triggered for the first save
-    expect(interruptLog).toContain("Save Live Device File");
-
-    // The *second* call record must carry docB's content
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall.content).toBe("v2");
-    expect(lastCall.remoteName).toBe("init.lua");
+    expect(calls).toHaveLength(2);
+    expect(calls[0].content).toBe("v1");
+    expect(calls[1].content).toBe("v2");
   });
 
-  // -------------------------------------------------------------------------
-  // 2. AbortSignal is aborted when the gate is preempted
-  // -------------------------------------------------------------------------
-  it("the AbortSignal passed to the upload task is aborted when a new command runs", async () => {
-    const gate = makeGate();
-    let capturedSignal: AbortSignal | undefined;
-    let releaseUpload!: () => void;
+  it("the AbortSignal is NOT aborted when a new command is enqueued", async () => {
+    const queue = new CommandQueue();
+    let firstSignal: AbortSignal | undefined;
+    let secondSignal: AbortSignal | undefined;
 
-    // Slow live-edit save
-    const save = gate.run("Save Live Device File", async (signal) => {
-      capturedSignal = signal;
-      await new Promise<void>((r) => { releaseUpload = r; });
+    let releaseFirst!: () => void;
+    const first = queue.enqueue("Save Live Device File", async (signal) => {
+      firstSignal = signal;
+      await new Promise<void>((r) => { releaseFirst = r; });
     });
 
     await new Promise((r) => setTimeout(r, 5));
-    expect(capturedSignal?.aborted).toBe(false);
+    expect(firstSignal!.aborted).toBe(false);
 
-    // An "Upload File" command interrupts the save
-    const uploadFile = gate.run("Upload File", async () => "uploaded");
+    const second = queue.enqueue("Upload File", async (signal) => {
+      secondSignal = signal;
+    });
 
     await new Promise((r) => setTimeout(r, 5));
-    expect(capturedSignal?.aborted).toBe(true);
+    // The first task's signal should NOT be aborted just because a new task was enqueued
+    expect(firstSignal!.aborted).toBe(false);
 
-    releaseUpload();
-    await save;
-    await expect(uploadFile).resolves.toBe("uploaded");
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(secondSignal).toBeDefined();
   });
 
-  // -------------------------------------------------------------------------
-  // 3. Unrelated command interrupts an in-progress live-edit save
-  // -------------------------------------------------------------------------
-  it("an 'Upload File' command interrupts a live-edit save and runs to completion", async () => {
-    const interruptLog: string[] = [];
-    const gate = makeGate(interruptLog);
+  it("an 'Upload File' command waits in queue and runs after the live-edit save finishes", async () => {
+    const queue = new CommandQueue();
     const executedCommands: string[] = [];
 
-    let releaseUpload!: () => void;
-
-    // A slow live-edit save
-    const save = gate.run("Save Live Device File", async () => {
-      await new Promise<void>((r) => { releaseUpload = r; });
+    let releaseSave!: () => void;
+    const save = queue.enqueue("Save Live Device File", async () => {
+      await new Promise<void>((r) => { releaseSave = r; });
       executedCommands.push("Save Live Device File");
     });
 
     await new Promise((r) => setTimeout(r, 5));
 
-    // User fires "Upload Changes" from the command palette
-    const uploadChanges = gate.run("Upload Changes", async () => {
+    const uploadChanges = queue.enqueue("Upload Changes", async () => {
       executedCommands.push("Upload Changes");
       return "ok";
     });
 
-    releaseUpload();
-    await Promise.allSettled([save, uploadChanges]);
+    // Upload Changes should be queued, not running yet
+    expect(queue.getState().pending).toHaveLength(1);
+    expect(queue.getState().pending[0].name).toBe("Upload Changes");
 
-    expect(interruptLog).toContain("Save Live Device File");
-    expect(executedCommands).toContain("Upload Changes");
-    // The save task may or may not have committed depending on timing,
-    // but the Upload Changes must always execute.
+    releaseSave();
+    await Promise.all([save, uploadChanges]);
+
+    expect(executedCommands).toEqual(["Save Live Device File", "Upload Changes"]);
     expect(await uploadChanges).toBe("ok");
   });
 
-  // -------------------------------------------------------------------------
-  // 4. A live-edit save that completes normally does NOT interrupt a subsequent one
-  // -------------------------------------------------------------------------
-  it("a finished save does not interrupt the next unrelated save", async () => {
-    const interruptLog: string[] = [];
-    const gate = makeGate(interruptLog);
+  it("a finished save does not affect the next unrelated save", async () => {
+    const queue = new CommandQueue();
+    const executed: string[] = [];
 
-    // Fast save A — completes before save B is started
-    await gate.run("Save Live Device File", async () => { /* instant */ });
+    await queue.enqueue("Save Live Device File", async () => {
+      executed.push("A");
+    });
 
-    // Fast save B — gate is idle, no interrupt expected
-    await gate.run("Save Live Device File", async () => { /* instant */ });
+    await queue.enqueue("Save Live Device File", async () => {
+      executed.push("B");
+    });
 
-    expect(interruptLog).toHaveLength(0);
+    expect(executed).toEqual(["A", "B"]);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(queue.getState().running).toBeNull();
   });
 
-  // -------------------------------------------------------------------------
-  // 5. onInterrupt is called with the name of the displaced task
-  // -------------------------------------------------------------------------
-  it("onInterrupt receives the exact name of the task that was running", async () => {
-    const interruptLog: string[] = [];
-    const gate = makeGate(interruptLog);
+  it("three rapid saves: all three run and commit in order", async () => {
+    const uploadCalls: string[] = [];
+    const queue = new CommandQueue();
+
+    const makeUpload = (content: string, stallMs: number) =>
+      queue.enqueue("Save Live Device File", async () => {
+        await new Promise((r) => setTimeout(r, stallMs));
+        uploadCalls.push(content);
+      });
+
+    const a = makeUpload("v1", 20);
+    const b = makeUpload("v2", 10);
+    const c = makeUpload("v3", 5);
+
+    await Promise.all([a, b, c]);
+
+    expect(uploadCalls).toEqual(["v1", "v2", "v3"]);
+  });
+
+  it("cancelPending rejects queued saves but lets the running one complete", async () => {
+    const queue = new CommandQueue();
+    const committed: string[] = [];
 
     let release!: () => void;
-    const first = gate.run("MyCustomOperation", async () => {
+    const first = queue.enqueue("Save Live Device File", async () => {
       await new Promise<void>((r) => { release = r; });
+      committed.push("first");
     });
 
     await new Promise((r) => setTimeout(r, 5));
 
-    const second = gate.run("AnotherOperation", async () => "done");
+    const second = queue.enqueue("Save Live Device File", async () => {
+      committed.push("second");
+    });
+    const third = queue.enqueue("Save Live Device File", async () => {
+      committed.push("third");
+    });
+
+    queue.cancelPending();
+
+    await expect(second).rejects.toThrow("Queued command cancelled");
+    await expect(third).rejects.toThrow("Queued command cancelled");
 
     release();
-    await Promise.allSettled([first, second]);
-
-    expect(interruptLog).toEqual(["MyCustomOperation"]);
+    await first;
+    expect(committed).toEqual(["first"]);
   });
 
-  // -------------------------------------------------------------------------
-  // 6. Multiple rapid saves: content of the last one is what gets uploaded
-  // -------------------------------------------------------------------------
-  it("three rapid saves: upload is called with content of the third document", async () => {
-    const uploadCalls: string[] = [];
-    const interruptLog: string[] = [];
-    const gate = makeGate(interruptLog);
+  it("cancelRunning aborts the running save's signal", async () => {
+    const queue = new CommandQueue();
+    let capturedSignal: AbortSignal | undefined;
 
-    const makeUpload = (content: string, stallMs: number) =>
-      gate.run("Save Live Device File", async (signal) => {
-        await new Promise<void>((r) => setTimeout(r, stallMs));
-        if (!signal.aborted) {
-          uploadCalls.push(content);
-        }
+    const save = queue.enqueue("Save Live Device File", async (signal) => {
+      capturedSignal = signal;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 5000);
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error("aborted"));
+        });
       });
+    });
 
-    // Three saves fire in rapid succession; only the last should commit
-    const a = makeUpload("v1", 50);
-    const b = makeUpload("v2", 10);
-    const c = makeUpload("v3", 5);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(capturedSignal!.aborted).toBe(false);
 
-    await Promise.allSettled([a, b, c]);
-
-    expect(uploadCalls).toContain("v3");
-    // v1 was aborted by v2 which was aborted by v3, so v1 must not have committed
-    expect(uploadCalls).not.toContain("v1");
+    queue.cancelRunning();
+    await expect(save).rejects.toThrow("aborted");
+    expect(capturedSignal!.aborted).toBe(true);
   });
 });

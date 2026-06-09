@@ -8,6 +8,7 @@ export interface LuaModuleInfo {
   mainFile: string;
   dir: string;
   examples: string[];
+  allFiles: string[];
 }
 
 export async function listLuaModulesFromFirmware(firmwarePath: string): Promise<LuaModuleInfo[]> {
@@ -28,19 +29,55 @@ export async function listLuaModulesFromDir(root: string): Promise<LuaModuleInfo
     const stat = await fs.stat(dir).catch(() => null);
     if (!stat?.isDirectory()) continue;
     const files = await fs.readdir(dir).catch(() => []);
-    const luaFile = files.find((f) => f.endsWith(".lua") && !f.endsWith("_Example.lua") && !f.endsWith("_Example1.lua") && !f.endsWith("_Example2.lua"));
-    if (!luaFile) continue;
-    const description = await extractDescription(path.join(dir, luaFile));
-    const examples = files.filter((f) => /Example.*\.lua$/i.test(f));
+    const luaFiles = files.filter((f) => f.endsWith(".lua"));
+    if (luaFiles.length === 0) continue;
+    const mainFile = selectMainFile(entry, luaFiles);
+    if (!mainFile) continue;
+    const description = await extractDescription(path.join(dir, mainFile));
+    const examples = luaFiles.filter((f) => isNonMainFile(f, entry));
     out.push({
       name: entry,
       description,
-      mainFile: path.join(dir, luaFile),
+      mainFile: path.join(dir, mainFile),
       dir,
       examples: examples.map((e) => path.join(dir, e)),
+      allFiles: luaFiles.map((f) => path.join(dir, f)),
     });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function selectMainFile(dirName: string, luaFiles: string[]): string | null {
+  const dirLower = dirName.toLowerCase();
+  const exactMatch = luaFiles.find((f) => path.basename(f, ".lua").toLowerCase() === dirLower);
+  if (exactMatch) return exactMatch;
+  const candidates = luaFiles.filter((f) => !isNonMainFile(f, dirName));
+  if (candidates.length > 0) return candidates[0];
+  return luaFiles[0];
+}
+
+function isNonMainFile(fileName: string, dirName: string): boolean {
+  const base = path.basename(fileName, ".lua").toLowerCase();
+  const dirLower = dirName.toLowerCase();
+  if (base === dirLower) return false;
+  if (/example/i.test(fileName)) return true;
+  if (/_test/i.test(fileName) || /test_/i.test(fileName)) return true;
+  if (/-web$/i.test(base)) return true;
+  if (/-integer$/i.test(base)) return true;
+  if (/^example[_-]/i.test(fileName)) return true;
+  if (/_example\d*$/i.test(fileName)) return true;
+  return false;
+}
+
+export function selectMainFileForConfig(module: LuaModuleInfo, config?: { lua_number_integral?: boolean }): string {
+  if (config?.lua_number_integral) {
+    const integerBasename = `${module.name}-integer.lua`;
+    const integerVariant = module.allFiles.find((f) => path.basename(f).toLowerCase() === integerBasename.toLowerCase());
+    if (integerVariant) {
+      return integerVariant;
+    }
+  }
+  return module.mainFile;
 }
 
 async function extractDescription(filePath: string): Promise<string> {
