@@ -47,5 +47,16 @@ jobs:
 
       - run: npm run build
 
+      - run: npm run package
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.vsix"
+          generate_release_notes: true
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --pat ${{ secrets.VSCE_PAT }}
+
       - name: Publish to Open VSX
         run: npx ovsx publish --pat ${{ secrets.OVSX_PAT }}
