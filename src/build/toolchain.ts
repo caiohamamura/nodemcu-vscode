@@ -9,15 +9,20 @@ export interface ToolchainInfo {
 }
 
 export class ToolchainLocator {
-  constructor(private shell: Shell, private preferredPython?: string) {}
+  constructor(
+    private shell: Shell,
+    private preferredPython?: string,
+    private preferredCmake?: string,
+    private preferredNinja?: string,
+  ) {}
 
   async locate(): Promise<ToolchainInfo> {
-    const cmake = await this.shell.which("cmake");
+    const cmake = this.preferredCmake || await this.shell.which("cmake");
     if (!cmake) {
       throw new Error("cmake not found on PATH. Install CMake 3.24+ and ensure it is on PATH.");
     }
     const python = this.preferredPython || await this.locatePython();
-    const ninja = await this.shell.which("ninja");
+    const ninja = this.preferredNinja || await this.shell.which("ninja");
     const make = await this.shell.which("make");
     const generator = await this.detectGenerator(ninja, make);
     if (!python) throw new Error("Python not found. Install Python 3 and ensure it is on PATH.");

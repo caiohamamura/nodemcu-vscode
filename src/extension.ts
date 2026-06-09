@@ -37,6 +37,7 @@ import { createLuaModuleCompletionItem } from "./luaPicker/luaModuleCompletion";
 import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
 import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
 import { ensureManagedFirmware } from "./firmware/managedFirmware";
+import { ensureCMake, ensureNinja } from "./tools/managedTools";
 
 let outputChannel: vscode.OutputChannel;
 let statusEmitter: StatusEmitter;
@@ -138,6 +139,8 @@ let projectTasksProvider: AsyncTreeProvider;
 let srcSaveTimer: NodeJS.Timeout | undefined;
 let lastSavedUri: vscode.Uri | undefined;
 let pythonManager: PythonManager | undefined;
+let managedCMakePath: string | undefined;
+let managedNinjaPath: string | undefined;
 
 function getPythonPath(): string {
   if (pythonManager?.python) return pythonManager.python;
@@ -159,6 +162,33 @@ async function ensurePython(context: vscode.ExtensionContext): Promise<void> {
     outputChannel?.appendLine("[python] Falling back to system Python from PATH or setting.");
     pythonManager = undefined;
   }
+}
+
+async function resolveManagedTools(): Promise<{ cmake?: string; ninja?: string }> {
+  const storageRoot = extensionContext.globalStorageUri.fsPath;
+  const progress = (msg: string) => outputChannel?.appendLine(`[tools] ${msg}`);
+
+  if (!managedCMakePath) {
+    try {
+      managedCMakePath = await ensureCMake({ storageRoot, onProgress: progress });
+      outputChannel?.appendLine(`[tools] Using managed CMake at ${managedCMakePath}`);
+    } catch (err) {
+      outputChannel?.appendLine(`[tools] Managed CMake unavailable: ${err}`);
+      outputChannel?.appendLine("[tools] Falling back to system CMake from PATH.");
+    }
+  }
+
+  if (!managedNinjaPath) {
+    try {
+      managedNinjaPath = await ensureNinja({ storageRoot, onProgress: progress });
+      outputChannel?.appendLine(`[tools] Using managed Ninja at ${managedNinjaPath}`);
+    } catch (err) {
+      outputChannel?.appendLine(`[tools] Managed Ninja unavailable: ${err}`);
+      outputChannel?.appendLine("[tools] Falling back to system Ninja from PATH.");
+    }
+  }
+
+  return { cmake: managedCMakePath, ninja: managedNinjaPath };
 }
 
 export interface ClosedSerialMonitor {
@@ -559,7 +589,8 @@ async function doBuild(signal?: AbortSignal): Promise<void> {
     return;
   }
   setStatus("configuring", "configuring...");
-  const toolchain = await new ToolchainLocator(new Shell(), getPythonPath()).locate();
+  const tools = await resolveManagedTools();
+  const toolchain = await new ToolchainLocator(new Shell(), getPythonPath(), tools.cmake, tools.ninja).locate();
   setStatus("building", "building...");
   const mgr = new BuildManager(new Shell());
   const result = await mgr.build({
@@ -572,6 +603,8 @@ async function doBuild(signal?: AbortSignal): Promise<void> {
     onLog: (s) => outputChannel.append(s),
     onStderr: (s) => outputChannel.append(s),
     signal,
+    preferredCmake: tools.cmake,
+    preferredNinja: tools.ninja,
   });
   if (result.success) {
     setStatus("success", "build OK", result.summary);

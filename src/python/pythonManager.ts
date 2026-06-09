@@ -2,6 +2,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as child_process from "node:child_process";
+import { ensureManagedPython } from "../tools/managedTools";
 
 export interface PythonManagerOptions {
   storagePath: string;
@@ -34,9 +35,13 @@ export class PythonManager {
   }
 
   private async ensure(): Promise<string> {
-    const systemPython = this.opts.systemPython || await this.findSystemPython();
-    if (!systemPython) {
-      throw new Error("No Python found on system. Install Python 3.8+ and ensure it is on PATH.");
+    let basePython = this.opts.systemPython || await this.findSystemPython();
+    if (!basePython) {
+      this.opts.onProgress?.("No system Python found; downloading managed Python");
+      basePython = await ensureManagedPython({
+        storageRoot: this.opts.storagePath,
+        onProgress: this.opts.onProgress,
+      });
     }
 
     const venvPython = this.venvPythonPath();
@@ -52,7 +57,7 @@ export class PythonManager {
 
     this.opts.onProgress?.(`Creating Python venv at ${this.venvPath}`);
     await fsp.mkdir(path.dirname(this.venvPath), { recursive: true });
-    await this.runPython(systemPython, ["-m", "venv", this.venvPath]);
+    await this.runPython(basePython, ["-m", "venv", this.venvPath]);
     const created = fs.existsSync(venvPython);
     if (!created) {
       throw new Error("Failed to create Python venv");

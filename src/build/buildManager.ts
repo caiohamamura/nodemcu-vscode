@@ -19,6 +19,8 @@ export interface BuildContext {
   onLog: (chunk: string) => void;
   onStderr: (chunk: string) => void;
   signal?: AbortSignal;
+  preferredCmake?: string;
+  preferredNinja?: string;
 }
 
 export interface BuildResult {
@@ -84,7 +86,7 @@ export class BuildManager {
 
     let generator: ToolchainInfo["generator"] = ctx.generator;
     if (generator === "Unknown") {
-      const toolchain = await new ToolchainLocator(this.shell).locate();
+      const toolchain = await new ToolchainLocator(this.shell, undefined, ctx.preferredCmake, ctx.preferredNinja).locate();
       generator = toolchain.generator;
     }
 
