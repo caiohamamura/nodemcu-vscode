@@ -3,6 +3,7 @@
   "displayName": "NodeMCU",
   "description": "Cross-platform Lua firmware development for NodeMCU/ESP8266: build, flash, upload, and explore.",
   "version": "0.1.0",
+  "publisher": "caiohamamura",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0",
@@ -12,6 +13,8 @@
     "sumneko.lua"
   ],
   "categories": [
+    "Programming Languages",
+    "Snippets",
     "Other"
   ],
   "keywords": [
@@ -282,5 +285,12 @@
     "typescript": "^5.4.0",
     "vitest": "^4.1.8"
   },
-  "repository": "https://github.com/caiohamamura/nodemcu-vscode"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caiohamamura/nodemcu-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/caiohamamura/nodemcu-vscode/issues"
+  },
+  "icon": "resources/icons/nodemcu.png"
 }
