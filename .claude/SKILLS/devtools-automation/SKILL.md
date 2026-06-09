@@ -120,6 +120,10 @@ VS Code re-uses the same `__default__profile__` memento key.
 
 ## Repo Notes
 
+- **Full verified NodeMCU e2e flow** (launch, selectors, init→toggle→save→sync,
+  the device-claim `Proceed` prompt, timings, and the `pyserial` verification
+  recipe) is captured in [`notes/nodemcu-e2e-flow.md`](notes/nodemcu-e2e-flow.md).
+  Read it before writing or fixing `tests/e2e/*.test.ts`.
 - For this repository, always prefer a fresh Extension Development Host started
   from the rebuilt workspace, with its own `--user-data-dir` and
   `--extensions-dir`, so CDP actions are not pointed at a stale renderer.

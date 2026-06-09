@@ -28,8 +28,9 @@ import { SerialDiscovery, type SerialPort } from "./flash/serialDiscovery";
 import { NodemcuTool, type FileEntry, type NodemcuToolOptions } from "./upload/nodemcuTool";
 import { DirectSerialUploader } from "./upload/directSerialUploader";
 import { readDeviceIdentity, type DeviceIdentity } from "./device/deviceIdentity";
+import { readDeviceFirmwareInfo } from "./device/deviceFirmwareInfo";
 import { planMirrorSync } from "./upload/srcMirror";
-import { StatusEmitter, type BuildState } from "./status/statusBar";
+import { StatusEmitter, type BuildState, type StatusUpdate } from "./status/statusBar";
 import { PythonManager } from "./python/pythonManager";
 import { listLuaModulesFromFirmware, listCModules, type LuaModuleInfo, type CModuleInfo } from "./luaPicker/moduleList";
 import { createLuaModuleCompletionItem } from "./luaPicker/luaModuleCompletion";
@@ -39,7 +40,6 @@ import { ensureManagedFirmware } from "./firmware/managedFirmware";
 
 let outputChannel: vscode.OutputChannel;
 let statusEmitter: StatusEmitter;
-let statusBarItem: vscode.StatusBarItem;
 let portStatusBarItem: vscode.StatusBarItem;
 let watcher: ConfigWatcher | undefined;
 let cachedConfig: NodemcuConfig | null = null;
@@ -292,14 +292,63 @@ function updateProjectContext(): void {
   void vscode.commands.executeCommand("setContext", "nodemcu.projectValid", isProjectValid());
 }
 
+// Operation progress is surfaced as a notification (toast) rather than a cryptic
+// status-bar item. The status bar is reserved for persistent info (the port).
+// `statusEmitter` is still the single source of truth for state (read by tests).
+let progressActive = false;
+let progressReport: ((value: { message?: string }) => void) | null = null;
+let progressDone: (() => void) | null = null;
+
+function isWorkingState(state: BuildState): boolean {
+  return state === "configuring" || state === "building" || state === "flashing" || state === "uploading";
+}
+
+function statusMessage(update: StatusUpdate): string {
+  return update.detail ? `${update.text} — ${update.detail}` : update.text;
+}
+
+function presentStatus(update: StatusUpdate): void {
+  if (isWorkingState(update.state)) {
+    if (!progressActive) {
+      // Open a single long-lived progress toast for the operation; later working
+      // updates just retitle its message via progress.report().
+      progressActive = true;
+      void vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "NodeMCU", cancellable: false },
+        (progress) => {
+          progressReport = (value) => progress.report(value);
+          progress.report({ message: statusMessage(update) });
+          return new Promise<void>((resolve) => {
+            progressDone = resolve;
+          });
+        },
+      );
+    } else {
+      progressReport?.({ message: statusMessage(update) });
+    }
+    return;
+  }
+  // Terminal / idle: close any open progress toast, then surface the result.
+  if (progressActive) {
+    progressDone?.();
+    progressActive = false;
+    progressReport = null;
+    progressDone = null;
+  }
+  if (update.state === "success") {
+    void vscode.window.showInformationMessage(`NodeMCU: ${update.text}`);
+  } else if (update.state === "error") {
+    void vscode.window.showErrorMessage(`NodeMCU: ${update.text}`);
+  }
+}
+
 function setStatus(state: BuildState, text: string, detail?: string): void {
-  statusEmitter.update({ state, text, detail });
-  statusBarItem.text = `$(circuit-board) ${text}`;
-  statusBarItem.tooltip = detail ?? text;
-  statusBarItem.show();
+  const update: StatusUpdate = { state, text, detail };
+  statusEmitter.update(update);
   if (state !== "idle") {
     outputChannel?.appendLine(`[${new Date().toLocaleTimeString()}] ${text}${detail ? ` - ${detail}` : ""}`);
   }
+  presentStatus(update);
 }
 
 function showOperationLog(name: string): void {
@@ -747,6 +796,50 @@ function isUriUnderSrc(uri: vscode.Uri, cfg: NodemcuConfig): boolean {
   return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
+/**
+ * Decide whether the firmware needs a rebuild+flash for the selected C modules,
+ * logging exactly what is going on (issue: the first sync used to silently show
+ * only "formatting"/"sync"). Best-effort reads the attached device's boot banner
+ * so the user can see which modules the physical device already provides.
+ * Returns true if it is OK to continue the sync (no build needed, or build+flash
+ * succeeded).
+ */
+async function ensureFirmwareForSelectedModules(
+  fw: string,
+  cfg: NodemcuConfig,
+  port: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const selected = Object.entries(cfg.c_modules)
+    .filter(([, v]) => v)
+    .map(([k]) => k)
+    .sort();
+
+  const info = await readDeviceFirmwareInfo({ port, baud: cfg.nodemcu.baud, signal });
+  if (info) {
+    outputChannel.appendLine(
+      `Device is running NodeMCU ${info.version ?? "(unknown version)"} with ${info.modules.length} module(s): ${info.modules.join(", ")}.`,
+    );
+    const missing = selected.filter((m) => !info.modules.includes(m));
+    if (missing.length === 0) {
+      outputChannel.appendLine(`All ${selected.length} selected C module(s) are already present on the device.`);
+    } else {
+      outputChannel.appendLine(`Selected C module(s) not yet on the device firmware: ${missing.join(", ")}.`);
+    }
+  } else {
+    outputChannel.appendLine("Could not read the device firmware banner (port busy or not running NodeMCU); continuing.");
+  }
+
+  const headerPath = userModulesHeader(fw);
+  if (!isCModulesConfigChanged(headerPath, cfg)) {
+    outputChannel.appendLine("Selected C modules already match the built firmware — skipping build & flash; syncing Lua only.");
+    return true;
+  }
+  outputChannel.appendLine("Selected C modules differ from the built firmware — rebuilding and flashing before sync...");
+  await doBuildAndFlash(signal);
+  return statusEmitter.getState() === "success";
+}
+
 async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boolean; signal?: AbortSignal }): Promise<void> {
   const cfg = getConfigOrNull();
   if (!cfg) {
@@ -761,22 +854,19 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
   outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Mirroring src/ to device...`);
 
-  const fw = await getFirmwarePath();
-  if (fw) {
-    const headerPath = userModulesHeader(fw);
-    if (isCModulesConfigChanged(headerPath, cfg)) {
-      outputChannel.appendLine("C modules configuration has changed. Rebuilding and flashing firmware first...");
-      await doBuildAndFlash(opts.signal);
-      if (statusEmitter.getState() !== "success") {
-        vscode.window.showErrorMessage("Build and flash failed. Sync aborted.");
-        return;
-      }
-    }
-  }
-
   const python = getPythonPath();
   const port = await ensurePort(cfg);
   if (!port) return;
+
+  const fw = await getFirmwarePath();
+  if (fw) {
+    const ok = await ensureFirmwareForSelectedModules(fw, cfg, port, opts.signal);
+    if (!ok) {
+      vscode.window.showErrorMessage("Build and flash failed. Sync aborted.");
+      return;
+    }
+  }
+
   const monitors = await closeSerialMonitors();
   try {
     const identity = await ensureKnownDevice(cfg, port, opts.signal);
@@ -845,6 +935,14 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     await extensionContext.workspaceState.update("nodemcu.uploadTimestamps", uploadTimestamps);
   }
 
+  // Enabled Lua modules ride along with the src sync — checking a module in the
+  // side panel is enough; no separate manual "Sync Lua Modules" step.
+  if (fw) {
+    const mod = await reconcileLuaModulesOnDevice(toolOpts, cfg, fw, remote.files ?? []);
+    successCount += mod.uploaded + mod.removed;
+    failCount += mod.failed;
+  }
+
   if (successCount > 0) {
     await resetWithFallback(toolOpts);
   }
@@ -853,8 +951,7 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     vscode.window.showErrorMessage(`Synced ${successCount} operation(s), ${failCount} failed.`);
   } else if (successCount > 0) {
     updateSyncTimestamp();
-    setStatus("success", `synced ${successCount} operation(s)`);
-    vscode.window.showInformationMessage(`Synchronized src/ with ${port}.`);
+    setStatus("success", `synced ${successCount} operation(s) to ${port}`);
   }
   } finally {
     await restoreSerialMonitors(monitors, opts.signal);
@@ -873,6 +970,87 @@ function updateSyncTimestamp(): void {
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Updated sync timestamp: ${timestamp}`);
 }
 
+type DeviceToolOpts = { python: string; port: string; baud: number; baudUpload: number; signal?: AbortSignal };
+
+/**
+ * Make the device's compiled Lua modules (`<name>.lc`) match the enabled set in
+ * `nodemcu.ini`: upload enabled local modules that are missing or changed, and
+ * remove `<name>.lc` for modules that are no longer enabled. This folds the old
+ * manual "Sync Lua Modules to Device" step into the normal upload paths, so a
+ * user who checks a module in the side panel just has it work on next save.
+ * `remoteFiles` (when already listed by the caller) avoids an extra device read.
+ */
+async function reconcileLuaModulesOnDevice(
+  toolOpts: DeviceToolOpts,
+  cfg: NodemcuConfig,
+  fw: string,
+  remoteFiles?: FileEntry[],
+): Promise<{ uploaded: number; removed: number; failed: number }> {
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) return { uploaded: 0, removed: 0, failed: 0 };
+
+  const resolved = await resolveAllLuaModules(workspaceRoot, fw, cfg);
+  const enabledLocal = resolved.filter((m) => !m.isRemote && m.exists);
+  const enabledNames = new Set(enabledLocal.map((m) => m.name));
+
+  let entries = remoteFiles;
+  if (!entries) {
+    const listed = await listFilesWithFallback({ ...toolOpts, compile: false }, false);
+    entries = listed.success ? listed.files ?? [] : [];
+  }
+  const fileNames = entries.map((f) => f.name);
+  const remoteSet = new Set(fileNames);
+
+  const moduleTs = extensionContext
+    ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.moduleTimestamps") || {}
+    : {};
+
+  let uploaded = 0;
+  let removed = 0;
+  let failed = 0;
+
+  for (const m of enabledLocal) {
+    const localPath = m.resolvedLocalPath!;
+    if (!fs.existsSync(localPath)) continue;
+    const remoteName = `${m.name}.lc`;
+    const mtime = fs.statSync(localPath).mtimeMs;
+    if (remoteSet.has(remoteName) && moduleTs[localPath] === mtime) continue; // present & unchanged
+    setStatus("uploading", `syncing module ${m.name}...`);
+    const r = await uploadWithFallback({ ...toolOpts, compile: true }, localPath, remoteName);
+    if (r.success) {
+      uploaded++;
+      moduleTs[localPath] = mtime;
+    } else {
+      failed++;
+      outputChannel.appendLine(`Failed to sync module ${m.name}: ${r.error}`);
+    }
+  }
+
+  // Remove modules that were synced before but are no longer enabled.
+  const allModuleNames = new Set((await listLuaModulesFromFirmware(fw)).map((m) => m.name));
+  for (const remoteName of fileNames) {
+    const match = /^(.+)\.lc$/.exec(remoteName);
+    if (!match) continue;
+    const name = match[1];
+    if (!allModuleNames.has(name) || enabledNames.has(name)) continue;
+    setStatus("uploading", `removing module ${name}...`);
+    const rr = await removeWithFallback({ ...toolOpts, compile: false }, remoteName);
+    if (rr.success) removed++;
+    else {
+      failed++;
+      outputChannel.appendLine(`Failed to remove module ${name}: ${rr.error}`);
+    }
+  }
+
+  if (extensionContext) {
+    await extensionContext.workspaceState.update("nodemcu.moduleTimestamps", moduleTs);
+  }
+  if (uploaded || removed) {
+    outputChannel.appendLine(`Lua modules reconciled: ${uploaded} synced, ${removed} removed.`);
+  }
+  return { uploaded, removed, failed };
+}
+
 async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: AbortSignal): Promise<void> {
   const srcDir = getConfiguredSrcDir(cfg);
   if (!srcDir) return;
@@ -885,6 +1063,7 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
   if (fw) {
     const headerPath = userModulesHeader(fw);
     if (isCModulesConfigChanged(headerPath, cfg)) {
+      outputChannel.appendLine("C modules changed — rebuilding and flashing before upload...");
       await doBuildAndFlash(signal);
       if (statusEmitter.getState() !== "success") return;
     }
@@ -902,16 +1081,24 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
 
     setStatus("uploading", `uploading ${remoteName}...`);
     const result = await uploadWithFallback(toolOpts, uri.fsPath, remoteName);
+    if (!result.success) {
+      setStatus("error", `upload FAILED: ${remoteName}`);
+      outputChannel.appendLine(`Failed to upload ${remoteName}: ${result.error}`);
+      return;
+    }
+    outputChannel.appendLine(`Uploaded ${remoteName}`);
 
-    if (result.success) {
-      await resetWithFallback(toolOpts);
-      updateSyncTimestamp();
-      setStatus("success", `uploaded ${remoteName}`);
-      outputChannel.appendLine(`Uploaded ${remoteName}`);
-    } else {
-    setStatus("error", `upload FAILED: ${remoteName}`);
-    outputChannel.appendLine(`Failed to upload ${remoteName}: ${result.error}`);
-  }
+    // Keep enabled Lua modules in sync as part of every upload.
+    if (fw) {
+      const mod = await reconcileLuaModulesOnDevice(toolOpts, cfg, fw);
+      if (mod.failed > 0) {
+        setStatus("error", `${remoteName} uploaded, but ${mod.failed} module(s) failed to sync`);
+      }
+    }
+
+    await resetWithFallback(toolOpts);
+    updateSyncTimestamp();
+    setStatus("success", `uploaded ${remoteName}`);
   } finally {
     await restoreSerialMonitors(monitors, signal);
   }
@@ -1080,9 +1267,9 @@ async function doAcceptLuaModuleCompletion(signal: AbortSignal | undefined, modu
 
 async function doUploadAndMonitor(signal?: AbortSignal): Promise<void> {
   await closeSerialMonitors();
+  // doUploadChanges → mirrorSrcToDevice now also reconciles enabled Lua modules,
+  // so no separate doSyncLuaModules call is needed here.
   await doUploadChanges(signal);
-  if (statusEmitter.getState() === "error") return;
-  await doSyncLuaModules(signal);
   if (statusEmitter.getState() === "error") return;
   await doOpenSerialMonitor(signal);
 }
@@ -1403,15 +1590,10 @@ function buildCModulesProvider(): AsyncTreeProvider {
 }
 
 function buildProjectTasksProvider(): AsyncTreeProvider {
-  return new AsyncTreeProvider(async () => [
-    {
-      id: "task-init",
-      label: "Initialize Project",
-      collapsibleState: vscode.TreeItemCollapsibleState.None,
-      iconPath: new vscode.ThemeIcon("new-folder"),
-      command: { command: "nodemcu-vscode.initProject", title: "Initialize" },
-    },
-  ]);
+  // Return no children so the `viewsWelcome` contribution (explanatory text +
+  // an "Initialize NodeMCU Project" button, like the built-in Git view) renders
+  // instead of a bare tree row.
+  return new AsyncTreeProvider(async () => []);
 }
 
 class LuaModuleCompletionProvider implements vscode.CompletionItemProvider {
@@ -1459,13 +1641,10 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   });
   statusEmitter = new StatusEmitter();
-  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusBarItem.command = "nodemcu-vscode.openIni";
-  
   portStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
   portStatusBarItem.command = "nodemcu-vscode.selectPort";
-  
-  context.subscriptions.push(statusBarItem, portStatusBarItem, outputChannel);
+
+  context.subscriptions.push(portStatusBarItem, outputChannel);
   setStatus("idle", "NodeMCU: idle");
 
   deviceExplorerProvider = buildDeviceExplorerProvider();

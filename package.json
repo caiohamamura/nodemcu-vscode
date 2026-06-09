@@ -85,6 +85,13 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "nodemcu.projectTasks",
+        "when": "!nodemcu.projectValid",
+        "contents": "This folder is not a NodeMCU project yet.\n\nInitializing creates a `nodemcu.ini`, a `src/` folder, and a starter `init.lua`, then reveals the Device Explorer and the C/Lua module panels.\n[Initialize NodeMCU Project](command:nodemcu-vscode.initProject)\nThe extension downloads and patches a known-good firmware automatically — you do not need to clone nodemcu-firmware."
+      }
+    ],
     "commands": [
       {
         "command": "nodemcu-vscode.initProject",
