@@ -39,6 +39,9 @@ describe("BuildManager (integration, mocked shell)", () => {
     fs.mkdirSync(path.join(fwPath, "app", "include"), { recursive: true });
     fs.mkdirSync(path.join(fwPath, "cmake"), { recursive: true });
     fs.writeFileSync(path.join(fwPath, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.24)\nproject(fake)\n");
+    // Simulate a previously completed build so incremental-build tests see no missing build dir.
+    fs.mkdirSync(path.join(fwPath, "build"), { recursive: true });
+    fs.writeFileSync(path.join(fwPath, "build", "CMakeCache.txt"), "# fake cache\n");
     const cfg = defaultConfig();
     cfg.c_modules = { wifi: true };
     writeUserModulesHeader(path.join(fwPath, "app", "include", "user_modules.h"), cfg);

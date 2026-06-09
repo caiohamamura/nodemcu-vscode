@@ -761,14 +761,17 @@ async function ensureKnownDevice(cfg: NodemcuConfig, port: string, signal?: Abor
     return { allowed: true, identity: result.identity, isNew: false };
   }
 
-  const choice = await vscode.window.showWarningMessage(
-    `Device ${result.identity.macAddress} is not listed in nodemcu.ini for this workspace. Proceeding will add it, format the device filesystem, and sync files from src/.`,
-    "Proceed",
-    "Cancel",
-  );
-  if (choice !== "Proceed") {
-    vscode.window.showWarningMessage("Open the workspace that matches this device, or proceed after confirming this workspace should own it.");
-    return { allowed: false, identity: result.identity, isNew: true };
+  // Fresh workspace (no devices registered yet): auto-add silently — the user is working from scratch.
+  if (cfg.devices.uuids.length > 0) {
+    const choice = await vscode.window.showWarningMessage(
+      `Device ${result.identity.macAddress} is not listed in nodemcu.ini for this workspace. Proceeding will add it, format the device filesystem, and sync files from src/.`,
+      "Proceed",
+      "Cancel",
+    );
+    if (choice !== "Proceed") {
+      vscode.window.showWarningMessage("Open the workspace that matches this device, or proceed after confirming this workspace should own it.");
+      return { allowed: false, identity: result.identity, isNew: true };
+    }
   }
 
   const iniPath = existingIniPath();
@@ -809,6 +812,7 @@ async function ensureFirmwareForSelectedModules(
   cfg: NodemcuConfig,
   port: string,
   signal?: AbortSignal,
+  isFreshWorkspace = false,
 ): Promise<boolean> {
   const selected = Object.entries(cfg.c_modules)
     .filter(([, v]) => v)
@@ -827,7 +831,13 @@ async function ensureFirmwareForSelectedModules(
       outputChannel.appendLine(`Selected C module(s) not yet on the device firmware: ${missing.join(", ")}.`);
     }
   } else {
-    outputChannel.appendLine("Could not read the device firmware banner (port busy or not running NodeMCU); continuing.");
+    outputChannel.appendLine("Could not read the device firmware banner (port busy or not running NodeMCU).");
+    if (isFreshWorkspace) {
+      outputChannel.appendLine("Fresh workspace: no NodeMCU banner — building and flashing firmware...");
+      await doBuildAndFlash(signal);
+      return statusEmitter.getState() === "success";
+    }
+    outputChannel.appendLine("Continuing without banner check.");
   }
 
   const headerPath = userModulesHeader(fw);
@@ -858,9 +868,10 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
   const port = await ensurePort(cfg);
   if (!port) return;
 
+  const isFreshWorkspace = cfg.devices.uuids.length === 0;
   const fw = await getFirmwarePath();
   if (fw) {
-    const ok = await ensureFirmwareForSelectedModules(fw, cfg, port, opts.signal);
+    const ok = await ensureFirmwareForSelectedModules(fw, cfg, port, opts.signal, isFreshWorkspace);
     if (!ok) {
       vscode.window.showErrorMessage("Build and flash failed. Sync aborted.");
       return;

@@ -25,6 +25,9 @@ describe("ensureManagedFirmware", () => {
     fs.mkdirSync(path.join(root, "tools", "luac_cross"), { recursive: true });
     fs.writeFileSync(path.join(root, "tools", "luac_cross", "CMakeLists.txt"), "set(SOURCES\n    ${APP_DIR}/modules/pixbuf.c\n)\n");
 
+    // Pre-create the toolchain bin dir so preExtractToolchain skips the download in all cases.
+    fs.mkdirSync(path.join(root, "tools", "toolchains", "esp8266-xtensa-lx106-elf-win32-1.22.0-88-gde0bdc1-4.8.5", "bin"), { recursive: true });
+
     if (options.omitSubmodule !== "snprintf") {
       fs.mkdirSync(path.join(root, "app", "libc", "c99-snprintf"), { recursive: true });
       fs.writeFileSync(path.join(root, "app", "libc", "c99-snprintf", "snprintf.c"), "// fake snprintf");

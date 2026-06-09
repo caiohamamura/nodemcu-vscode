@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as path from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import {
   resolveFirmwarePath,
   defaultBuildDir,
@@ -13,16 +15,27 @@ import {
 } from "../../src/util/paths";
 
 describe("path utilities", () => {
-  const FIXTURE_ROOT = path.resolve(__dirname, "../fixtures/fake-firmware");
+  let tmpFw: string;
+
+  beforeEach(() => {
+    tmpFw = fs.mkdtempSync(path.join(os.tmpdir(), "nodemcu-paths-test-"));
+    fs.writeFileSync(path.join(tmpFw, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.24)\n");
+    fs.mkdirSync(path.join(tmpFw, "app", "coap"), { recursive: true });
+    fs.writeFileSync(path.join(tmpFw, "app", "coap", "CMakeLists.txt"), "add_library(coap STATIC coap.c)\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpFw, { recursive: true, force: true });
+  });
 
   describe("resolveFirmwarePath", () => {
     it("resolves a relative path against workspaceRoot", () => {
-      const resolved = resolveFirmwarePath(path.dirname(FIXTURE_ROOT), "fake-firmware");
-      expect(resolved).toBe(FIXTURE_ROOT);
+      const resolved = resolveFirmwarePath(path.dirname(tmpFw), path.basename(tmpFw));
+      expect(resolved).toBe(tmpFw);
     });
 
     it("returns absolute paths unchanged", () => {
-      expect(resolveFirmwarePath("/anywhere", FIXTURE_ROOT)).toBe(FIXTURE_ROOT);
+      expect(resolveFirmwarePath("/anywhere", tmpFw)).toBe(tmpFw);
     });
 
     it("throws if path does not exist", () => {
@@ -69,11 +82,11 @@ describe("path utilities", () => {
 
   describe("isOptionalCModule", () => {
     it("returns true when app/<name>/CMakeLists.txt exists", () => {
-      expect(isOptionalCModule(FIXTURE_ROOT, "coap")).toBe(true);
+      expect(isOptionalCModule(tmpFw, "coap")).toBe(true);
     });
 
     it("returns false when subdir does not exist", () => {
-      expect(isOptionalCModule(FIXTURE_ROOT, "nonexistent")).toBe(false);
+      expect(isOptionalCModule(tmpFw, "nonexistent")).toBe(false);
     });
   });
 });
