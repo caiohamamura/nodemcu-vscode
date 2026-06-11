@@ -1888,8 +1888,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
   if (portRefreshTimer) clearInterval(portRefreshTimer);
   watcher?.stop();
-  void serialSessionManager?.closeAll();
+  await serialSessionManager?.closeAll();
 }
