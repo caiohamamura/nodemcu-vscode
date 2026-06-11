@@ -33,6 +33,7 @@
     "onView:nodemcu.projectTasks",
     "onView:nodemcu.luaModules",
     "onView:nodemcu.cModules",
+    "onView:nodemcu.serialConsole",
     "onCommand:nodemcu-vscode.initProject",
     "onCommand:nodemcu-vscode.build",
     "onCommand:nodemcu-vscode.flash",
@@ -49,6 +50,9 @@
     "onCommand:nodemcu-vscode.regenerateLuaApi",
     "onCommand:nodemcu-vscode.openIni",
     "onCommand:nodemcu-vscode.openSerialMonitor",
+    "onCommand:nodemcu-vscode.disconnectSerialSession",
+    "onCommand:nodemcu-vscode.releaseSerialPort",
+    "onCommand:nodemcu-vscode.reconnectSerialPort",
     "onCommand:nodemcu-vscode.selectPort",
     "onCommand:nodemcu-vscode.cancelQueued"
   ],
@@ -58,6 +62,13 @@
         {
           "id": "nodemcu-vscode",
           "title": "NodeMCU",
+          "icon": "resources/icons/nodemcu.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "nodemcu-serial-panel",
+          "title": "NodeMCU Serial",
           "icon": "resources/icons/nodemcu.svg"
         }
       ]
@@ -86,6 +97,14 @@
           "name": "C Modules",
           "contextualTitle": "NodeMCU C Modules",
           "when": "nodemcu.projectValid"
+        }
+      ],
+      "nodemcu-serial-panel": [
+        {
+          "id": "nodemcu.serialConsole",
+          "type": "webview",
+          "name": "Serial Console",
+          "contextualTitle": "NodeMCU Serial Console"
         }
       ]
     },
@@ -174,7 +193,22 @@
       },
       {
         "command": "nodemcu-vscode.openSerialMonitor",
-        "title": "Open Serial Monitor",
+        "title": "Open Serial Console",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.disconnectSerialSession",
+        "title": "Disconnect Serial Session",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.releaseSerialPort",
+        "title": "Release Serial Port",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.reconnectSerialPort",
+        "title": "Reconnect Serial Port",
         "category": "NodeMCU"
       },
       {
@@ -248,6 +282,11 @@
           "type": "boolean",
           "default": false,
           "description": "Show verbose build/flash output."
+        },
+        "nodemcu-vscode.experimental.allowNodemcuToolFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow legacy nodemcu-tool fallback when shared serial session operations fail."
         }
       }
     },

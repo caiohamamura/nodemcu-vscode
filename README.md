@@ -6,7 +6,7 @@
 
 A VS Code extension for end-to-end Lua development on NodeMCU / ESP8266 boards.
 It initializes projects, manages a known-good NodeMCU firmware checkout, builds
-and flashes firmware, syncs Lua files to the device, opens a serial monitor, and
+and flashes firmware, syncs Lua files to the device, keeps a live Serial Console, and
 adds IntelliSense stubs for NodeMCU globals.
 
 The extension is designed so you do not need to clone `nodemcu-firmware`
@@ -25,7 +25,7 @@ The marketplace logo is packaged from:
 The Activity Bar icon is packaged from:
 
 <p>
-  <img src="resources/icons/nodemcu.svg" alt="NodeMCU Activity Bar icon" width="48">
+  <img src="resources/icons/logo.png" alt="NodeMCU Activity Bar icon" width="48">
 </p>
 
 In VS Code, open the NodeMCU Activity Bar item to access Device Explorer, Lua
@@ -39,9 +39,9 @@ shows an **Initialize NodeMCU Project** action.
 3. Open the NodeMCU Activity Bar item.
 4. Click **Initialize NodeMCU Project**.
 5. Connect your NodeMCU / ESP8266 board with a USB data cable.
-6. Follow progress in the **NodeMCU** output channel.
+6. Watch the bottom-panel **NodeMCU Serial** console.
 7. Edit Lua files in `src/` and save them.
-8. Press `F5` to upload changes and open the serial monitor.
+8. Press `F5` to upload pending changes; the Serial Console stays connected.
 
 The first setup can take a while because the extension downloads tools and
 firmware, builds the selected firmware image, flashes the board, and performs
@@ -74,20 +74,25 @@ and syncs it to the device.
 | Firmware build | Builds selected C modules | Rebuilds only when C modules change |
 | Flashing | Flashes the ESP8266 | Needed only after firmware changes |
 | File sync | Formats and mirrors `src/` to the device | Uploads changed files and mirrors deletions |
-| Serial monitor | Opens after upload with `F5` | Closes and reopens around uploads |
+| Serial Console | Opens and connects automatically | Stays open while commands run |
 
 ## Core Workflow
 
 1. Edit a Lua file in `src/`.
 2. Save the file.
-3. The **NodeMCU** output channel opens and logs the upload.
+3. The bottom-panel **NodeMCU Serial** console remains focused and shows device output.
 4. The first sync mirrors the whole `src/` directory.
 5. Later saves upload only the saved file.
-6. Press `F5` for **Upload and Monitor**.
+6. Press `F5` for **Upload and Monitor** when you want to upload pending changes explicitly.
 
-`F5` closes any existing NodeMCU serial monitor, uploads pending changes, syncs
-enabled Lua modules, then opens a fresh `python -m serial.tools.miniterm`
-terminal for the selected port.
+The extension owns the selected serial port through a shared serial session.
+Commands such as upload, delete, run, reset, and Lua module sync write through
+that session while the Serial Console keeps reading. During those operations the
+console input box is disabled, but serial output continues to stream.
+
+Use **NodeMCU: Release Serial Port** or **NodeMCU: Disconnect Serial Session** if
+you want another tool to use the port. **NodeMCU: Open Serial Console** shows the
+console and reconnects it.
 
 ## Sidebar Views
 
@@ -132,7 +137,7 @@ Open the Command Palette and run commands under the **NodeMCU** category.
 | `NodeMCU: Build & Flash` | `Ctrl+Alt+B` | Build firmware, then flash it. |
 | `NodeMCU: Upload File to Device` | | Upload the current file when it is inside `src/`. |
 | `NodeMCU: Upload Changes to Device` | | Sync local `src/` changes to the device. |
-| `NodeMCU: Upload and Monitor` | `F5` | Upload changes, sync Lua modules, and open the serial monitor. |
+| `NodeMCU: Upload and Monitor` | `F5` | Upload changes and keep the Serial Console focused. |
 | `NodeMCU: Run File on Device` | | Execute a remote Lua file on the board. |
 | `NodeMCU: Reset Device` | | Reset the connected board. |
 | `NodeMCU: Refresh Device Explorer` | | Refresh detected ports and device data. |
@@ -141,7 +146,10 @@ Open the Command Palette and run commands under the **NodeMCU** category.
 | `NodeMCU: Toggle C Module` | | Enable or disable a firmware C module. |
 | `NodeMCU: Regenerate Lua API Stubs` | | Recreate `.vscode/nodemcu-api.lua` and `.luarc.json`. |
 | `NodeMCU: Open nodemcu.ini` | | Open the project configuration file. |
-| `NodeMCU: Open Serial Monitor` | | Open a serial monitor for the selected port. |
+| `NodeMCU: Open Serial Console` | | Show and connect the shared Serial Console. |
+| `NodeMCU: Disconnect Serial Session` | | Stop the shared serial session until you reconnect. |
+| `NodeMCU: Release Serial Port` | | Release the selected port for another tool. |
+| `NodeMCU: Reconnect Serial Port` | | Re-enable automatic serial ownership and reconnect. |
 | `NodeMCU: Select Port` | | Choose the serial port manually. |
 | `NodeMCU: Cancel Queued Commands` | | Cancel pending extension operations. |
 
@@ -159,8 +167,8 @@ lua_version = 53
 lua_number_integral = false
 lua_number_64bits = false
 port =
-baud = 460800
-upload_baud = 460800
+baud = 115200
+upload_baud = 115200
 src = src
 flash_mode = dio
 flash_freq = 80m
@@ -293,8 +301,9 @@ On Windows, common USB serial adapters may require CP210x or CH340 drivers.
 
 ### Uploads do not appear on the device
 
-Confirm the file is inside the configured `src/` directory. Then open the
-**NodeMCU** output channel and check the latest upload log.
+Confirm the file is inside the configured `src/` directory. Then check the
+bottom-panel **NodeMCU Serial** console for device output. The **NodeMCU** output
+channel still stores extension logs, but it does not open automatically.
 
 ### C module changes are not visible on the board
 

@@ -173,16 +173,16 @@ VS Code re-uses the same `__default__profile__` memento key.
   first Ctrl+S. Wait until the status bar shows `saving init.lua...`, then make
   the second edit and save. That proves interruption of an active upload without
   racing VS Code's document-save event plumbing.
-- The integrated Terminal / serial monitor is canvas-rendered. DOM
-  `.textContent` and the CDP accessibility tree expose the terminal widget and
-  title, but not the serial byte stream. For hardware assertions that need the
-  device's printed output, use a direct `serialport` read after the UI save path
-  completes. A DTR/RTS reset (`dtr: false, rts: true`, wait ~100ms, then
-  `dtr: false, rts: false`) reliably produces the NodeMCU boot banner and
-  `init.lua` print at 115200 baud.
+- The Serial Console is a bottom-panel WebviewView (`nodemcu.serialConsole`),
+  not an integrated terminal. In the workbench DOM, verify the `NodeMCU Serial`
+  panel is selected and an `iframe.webview.ready` exists with
+  `extensionId=caiohamamura.nodemcu-vscode`. The webview content itself is a
+  nested frame under the webview target; inspect that frame when checking
+  `#portLabel`, `#stateLabel`, `#output`, and `#input`.
 - `NodeMCU: Upload and Monitor` is the F5 workflow: run it from the command
   palette or dispatch F5, then verify changed files upload, Lua modules sync,
-  and a `NodeMCU: <port>` terminal opens.
+  and the `NodeMCU Serial` panel remains focused. The command no longer opens a
+  separate terminal process.
 - If a renderer looks stale, verify the target in `http://127.0.0.1:<port>/json`
   is the current `Extension Development Host`, then prefer `reload-window` or
   a new host over reusing an old one.
@@ -231,10 +231,10 @@ Simulates pressing F1, typing a VS Code command, and pressing Enter to execute i
 node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "<command-text>"
 # Example: Initialize the project configuration
 node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "NodeMCU: Initialize Project"
-# Example: Run the F5 edit loop
+# Example: Run the F5 upload flow
 node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "NodeMCU: Upload and Monitor"
-# Example: Open the serial monitor directly
-node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "NodeMCU: Open Serial Monitor"
+# Example: Show and connect the Serial Console directly
+node .claude/SKILLS/devtools-automation/scripts/cdp-control.js run-command "NodeMCU: Open Serial Console"
 ```
 
 ### 7. Reload the Window

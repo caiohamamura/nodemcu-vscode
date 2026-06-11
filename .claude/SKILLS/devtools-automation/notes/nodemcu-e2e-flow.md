@@ -74,9 +74,11 @@ interactively before any Vitest e2e was written (AGENTS.md §9.8 rule).
 
 ## Serial verification (the only reliable way to prove "it ran")
 
-The integrated terminal is canvas-rendered — CDP can't read the byte stream.
-Open COM7 directly with `pyserial` (or `serialport`) **after** the UI sync
-completes and the extension has released the port:
+The Serial Console is a VS Code WebviewView backed by the extension's shared
+serial session. CDP can verify that the panel is visible and connected, but
+hardware assertions that need independent byte-level proof should explicitly run
+**NodeMCU: Release Serial Port**, open COM7 directly with `pyserial` (or
+`serialport`), then run **NodeMCU: Reconnect Serial Port** afterward:
 
 - Reset to get the boot banner + `init.lua` output: `setDTR(False); setRTS(True);
   sleep(0.1); setRTS(False); setDTR(False)`. Banner self-reports
@@ -91,8 +93,9 @@ completes and the extension has released the port:
 
 - Full first sync ≈ 44 s (format ≈ 36 s). Use ≥ 90-120 s timeouts for sync
   tests; ≥ 15 s for Lua-module sync; short for toggles.
-- Only one process may hold COM7 — close serial monitors / the extension's port
-  before a direct `serialport` read, and vice-versa.
+- Only one process may hold COM7. Use **NodeMCU: Release Serial Port** before a
+  direct `serialport` read, and **NodeMCU: Reconnect Serial Port** before
+  returning to extension-driven serial operations.
 - A prompt left unanswered (or dismissed with Escape) leaves the OperationGate
   holding a stuck op; a clean `Developer: Reload Window` resets it.
 - Device MAC `48:3f:da:a4:40:b8` → uuid `483fdaa440b8`.

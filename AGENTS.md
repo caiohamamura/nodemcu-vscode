@@ -22,8 +22,9 @@ end-to-end Lua firmware development for **NodeMCU / ESP8266**:
 - Transactionally syncs the local `src/` directory to the device: first save
   does a full mirror; subsequent saves upload only the changed file. File
   deletions are mirrored too.
-- Opens the **NodeMCU** output channel automatically on every action so users
-  can follow progress in real time.
+- Keeps a bottom-panel **NodeMCU Serial** console open and connected so users can
+  follow serial output in real time. The regular **NodeMCU** output channel still
+  receives extension logs but does not steal focus automatically.
 - Auto-selects a serial port when detection is unambiguous, preserving an
   available configured port.
 - Lists available C and Lua modules in the sidebar (with checkboxes) and writes
@@ -191,7 +192,7 @@ Key symbols and their line ranges:
 | `doBuild()` / `doFlash()` / `doBuildAndFlash()` | Command palette handlers | 341 / 386 / 419 |
 | `doInitProject()` | Writes `nodemcu.ini` + `init.lua`, starts `ConfigWatcher` | 424 |
 | `doUploadFile()` / `doUploadChanges()` | `src/`-driven and mtime-tracked uploads | 488 / 651 |
-| `doUploadAndMonitor()` | Close monitor, upload changed files, sync Lua modules, reopen monitor (`F5`) | near `doSyncLuaModules()` |
+| `doUploadAndMonitor()` | Focus/connect Serial Console, upload changed files, sync Lua modules (`F5`) | near `doSyncLuaModules()` |
 | `doOpenLiveDeviceFile()` / `uploadLiveDocument()` | Device Files live edit via `nodemcu-live:` and upload-on-save | near device file commands |
 | `doSyncLuaModules()` | Compiles + uploads `[lua_modules]` entries as `.lc` | 826 |
 | `doRegenerateLuaApi()` | Writes `.vscode/nodemcu-api.lua` + `.luarc.json` | 861 |
@@ -245,10 +246,11 @@ Extension Development Host (see §9).
   - `nodemcu.projectTasks` — Project Tasks
   - `nodemcu.luaModules` — Lua Modules (checkboxes)
   - `nodemcu.cModules` — C Modules (checkboxes)
+  - `nodemcu.serialConsole` — bottom-panel WebviewView (`type: "webview"`) for the shared Serial Console.
 - **Commands**: prefixed `nodemcu-vscode.*`, including `uploadAndMonitor`,
   `openLiveDeviceFile`, and `acceptLuaModuleCompletion`. Keybindings:
-  `Ctrl+Shift+B` (build), `Ctrl+Alt+B` (build & flash), `F5` (upload and
-  monitor), and `Delete` / `Backspace` in Device Files.
+  `Ctrl+Shift+B` (build), `Ctrl+Alt+B` (build & flash), `F5` (upload and keep
+  Serial Console focused), and `Delete` / `Backspace` in Device Files.
 - **Context menus**: `view/item/context` adds `uploadFile` (Lua modules),
   `toggleCModule` (C modules), and `openLiveDeviceFile` / `downloadFile` /
   `deleteFile` / `runFile` / `refreshExplorer` (Device Files).
@@ -330,9 +332,17 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
 - **Lua module autocomplete:** accepting a firmware Lua module completion inserts
   `name = require("name")`, enables the module in `[lua_modules]`, refreshes
   views, and runs `Sync Lua Modules`.
-- **Upload and Monitor:** `nodemcu-vscode.uploadAndMonitor` closes the monitor,
-  runs the changed-file upload path (which rebuilds/flashes first if C modules
-  are dirty), syncs Lua modules, then opens `python -m serial.tools.miniterm`.
+- **Serial Console:** `nodemcu-vscode.openSerialMonitor` shows the bottom-panel
+  Serial Console and connects the shared serial session. The extension owns the
+  selected serial port by default while the workspace is active. Upload, delete,
+  list, run, reset, and Lua module sync use the shared session; the console keeps
+  reading while its input box is disabled during exclusive operations. Manual
+  **Disconnect Serial Session** or **Release Serial Port** suppresses automatic
+  reconnect until **Open Serial Console** or **Reconnect Serial Port** is used.
+- **Upload and Monitor:** `nodemcu-vscode.uploadAndMonitor` focuses/connects the
+  Serial Console, runs the changed-file upload path (which rebuilds/flashes
+  first if C modules are dirty), and syncs Lua modules. It keeps the shared
+  Serial Console focused instead of managing a separate terminal process.
 
 ---
 
@@ -492,29 +502,18 @@ caller-supplied reference. All callers (`mirrorSrcToDevice`, `doUploadSingleFile
 Also `scheduleSrcSync` was fixed to pass `currentCfg` (fresh) instead of `cfg`
 (stale outer closure) to `doUploadSingleFile`.
 
-### 9.3 Output channel visibility
+### 9.3 Serial console and output focus
 
-Every action entry point now calls `outputChannel.show(true)` + a timestamped
-`outputChannel.appendLine` before starting work. This replaces silent background
-operations. Functions updated in 2026-06-08 session:
+The bottom-panel **NodeMCU Serial** console is the default live feedback surface.
+It auto-opens/connects for a valid project unless the user explicitly runs
+**Disconnect Serial Session** or **Release Serial Port**. Normal serial
+operations focus/connect it and keep the shared serial session alive; only the
+console input box is disabled while an exclusive upload/list/delete/run/reset
+operation is active.
 
-| Function | Change |
-|---|---|
-| `mirrorSrcToDevice` | Added `show(true)` + "Mirroring" line |
-| `doUploadSingleFile` | Added `show(true)` + "Uploading" line |
-| `handleFileDelete` | Added `show(true)` + "Handling deletion" line |
-| `scheduleSrcSync` | Added `show(true)` + "File saved" line in the timeout callback |
-| `doInitProject` | Added `show(true)` + "Initializing" line |
-| `doRegenerateLuaApi` | Added `show(true)` + "Regenerating" line |
-| `doAddLuaModule` | Added `show(true)` + "Adding" line |
-| `doToggleLuaModule` | Added `show(true)` + "Toggling" line |
-| `doToggleCModule` | Added `show(true)` + "Toggling" line |
-| `doSelectPort` | Added `show(true)` + "Selecting" line |
-| `doRefreshExplorer` | Added `show(true)` + "Refreshing" line |
-| `doOpenIni` | Added `show(true)` + "Opening" line |
-
-Functions already covered by `commandWithOperation` (which auto-calls
-`showOperationLog` → `outputChannel.show(true)`) were left unchanged.
+The regular **NodeMCU** output channel is now a quiet log sink. It still receives
+timestamped extension logs but must not call `outputChannel.show(true)` from
+normal command/sync flows because that steals focus from the Serial Console.
 
 ### 9.4 Known issues
 

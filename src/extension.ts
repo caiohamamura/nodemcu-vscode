@@ -2,7 +2,6 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import * as child_process from "node:child_process";
 import { Shell } from "./util/shell";
 import { CommandQueue } from "./util/commandQueue";
 import {
@@ -26,9 +25,9 @@ import { FlashManager } from "./flash/flashManager";
 import { chooseAutoPort } from "./flash/autoPort";
 import { SerialDiscovery, type SerialPort } from "./flash/serialDiscovery";
 import { NodemcuTool, type FileEntry, type NodemcuToolOptions } from "./upload/nodemcuTool";
-import { DirectSerialUploader } from "./upload/directSerialUploader";
 import { readDeviceIdentity, type DeviceIdentity } from "./device/deviceIdentity";
 import { readDeviceFirmwareInfo } from "./device/deviceFirmwareInfo";
+import { SerialDeviceClient } from "./device/serialDeviceClient";
 import { planMirrorSync } from "./upload/srcMirror";
 import { StatusEmitter, type BuildState, type StatusUpdate } from "./status/statusBar";
 import { PythonManager } from "./python/pythonManager";
@@ -38,6 +37,8 @@ import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
 import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
 import { ensureManagedFirmware } from "./firmware/managedFirmware";
 import { ensureCMake, ensureNinja } from "./tools/managedTools";
+import { SerialSessionManager } from "./serial/serialSessionManager";
+import { SerialConsoleViewProvider } from "./serial/serialConsoleView";
 
 let outputChannel: vscode.OutputChannel;
 let statusEmitter: StatusEmitter;
@@ -48,6 +49,11 @@ let cachedConfig: NodemcuConfig | null = null;
 let cachedFirmwarePath: string | null = null;
 let pendingFirmwarePromise: Promise<string | null> | null = null;
 let extensionContext: vscode.ExtensionContext;
+let serialSessionManager: SerialSessionManager;
+let serialConsoleViewProvider: SerialConsoleViewProvider;
+let serialAutoConnectSuppressed = false;
+
+const SERIAL_AUTO_CONNECT_SUPPRESSED_KEY = "nodemcu.serialAutoConnectSuppressed";
 
 export class AsyncTreeProvider implements vscode.TreeDataProvider<TreeItemNode> {
   private _onDidChange = new vscode.EventEmitter<TreeItemNode | undefined>();
@@ -145,6 +151,43 @@ let managedNinjaPath: string | undefined;
 function getPythonPath(): string {
   if (pythonManager?.python) return pythonManager.python;
   return vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") || "python";
+}
+
+function getConfiguredBaud(cfg: NodemcuConfig | null | undefined): number {
+  return cfg?.nodemcu.baud && cfg.nodemcu.baud > 0 ? cfg.nodemcu.baud : 115200;
+}
+
+function allowNodemcuToolFallback(): boolean {
+  return vscode.workspace.getConfiguration("nodemcu-vscode").get<boolean>("experimental.allowNodemcuToolFallback") ?? false;
+}
+
+async function ensureSerialSession(cfg: NodemcuConfig): Promise<{ port: string; client: SerialDeviceClient } | null> {
+  const port = await ensurePort(cfg);
+  if (!port) {
+    return null;
+  }
+  const session = await serialSessionManager.switchPort(port, getConfiguredBaud(cfg));
+  return { port, client: new SerialDeviceClient(session) };
+}
+
+async function setSerialAutoConnectSuppressed(value: boolean): Promise<void> {
+  serialAutoConnectSuppressed = value;
+  await extensionContext?.workspaceState.update(SERIAL_AUTO_CONNECT_SUPPRESSED_KEY, value);
+}
+
+async function focusAndConnectSerialConsole(options: { force?: boolean } = {}): Promise<{ port: string; client: SerialDeviceClient } | null> {
+  if (serialAutoConnectSuppressed && !options.force) {
+    return null;
+  }
+  if (options.force) {
+    await setSerialAutoConnectSuppressed(false);
+  }
+  await serialConsoleViewProvider.reveal();
+  const cfg = getConfigOrNull();
+  if (!cfg) {
+    return null;
+  }
+  return await ensureSerialSession(cfg);
 }
 
 async function ensurePython(context: vscode.ExtensionContext): Promise<void> {
@@ -383,7 +426,6 @@ function setStatus(state: BuildState, text: string, detail?: string): void {
 }
 
 function showOperationLog(name: string): void {
-  outputChannel.show(true);
   outputChannel.appendLine(`\n[${new Date().toISOString()}] Starting ${name}`);
 }
 
@@ -451,6 +493,20 @@ async function updatePortStatusBar(cfg: NodemcuConfig | null) {
     }
     const port = ports.find((p) => p.path === selectedPort);
     const name = port?.manufacturer ? ` (${port.manufacturer})` : "";
+    const session = serialSessionManager?.getCurrentSession();
+    if (session && session.port === selectedPort) {
+      const state = session.getState();
+      if (state === "busy" || state === "booting" || state === "opening") {
+        portStatusBarItem.text = `$(sync~spin) ${selectedPort}${name}`;
+      } else if (state === "released-for-flash") {
+        portStatusBarItem.text = `$(debug-disconnect) ${selectedPort}${name}`;
+      } else {
+        portStatusBarItem.text = `$(plug) ${selectedPort}${name}`;
+      }
+      portStatusBarItem.tooltip = `Serial session ${state}. Click to select a serial port`;
+      portStatusBarItem.show();
+      return;
+    }
     portStatusBarItem.text = `$(plug) ${selectedPort}${name}`;
   } catch {
     const fallback = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("port") || cfg?.nodemcu.port || "No Port";
@@ -534,13 +590,16 @@ function saveSelectedPort(port: string): void {
     cfg.nodemcu.port = port;
     cachedConfig = cfg;
     saveConfig(iniPath, cfg);
+    void serialSessionManager.closeAll();
     updatePortStatusBar(cfg);
     refreshAll();
+    if (!serialAutoConnectSuppressed) {
+      void focusAndConnectSerialConsole();
+    }
   }
 }
 
 async function doSelectPort(item?: { serialPort?: SerialPort } | SerialPort): Promise<string | null> {
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Selecting serial port...`);
   const directPort = "serialPort" in (item ?? {}) ? (item as { serialPort?: SerialPort }).serialPort?.path : (item as SerialPort | undefined)?.path;
   if (directPort) {
@@ -628,34 +687,33 @@ async function doFlash(signal?: AbortSignal): Promise<void> {
   }
   const port = await ensurePort(cfg);
   if (!port) return;
-  const monitors = await closeSerialMonitors();
-  try {
-    const identity = await ensureKnownDevice(cfg, port, signal);
-    if (!identity.allowed) return;
-    setStatus("flashing", `flashing ${port}...`);
-    const python = getPythonPath();
-    const mgr = new FlashManager(new Shell());
-    const r = await mgr.flash({
-      python,
-      firmwarePath: fw,
-      config: cfg,
-      port,
-      onLog: (s) => outputChannel.append(s),
-      onStderr: (s) => outputChannel.append(s),
-      signal,
-    });
-    if (r.success) {
-      setStatus("success", `flashed ${port}`);
-      vscode.window.showInformationMessage(`Flashed ${port} in ${r.durationMs}ms`);
-      if (identity.isNew) {
-        await mirrorSrcToDevice({ changedOnly: false, forceFormat: true, signal });
-      }
-    } else {
-      setStatus("error", `flash FAILED`);
-      vscode.window.showErrorMessage(`Flash failed (exit ${r.exitCode})`);
+  const identity = await ensureKnownDevice(cfg, port, signal);
+  if (!identity.allowed) return;
+  setStatus("flashing", `flashing ${port}...`);
+  const python = getPythonPath();
+  const mgr = new FlashManager(new Shell());
+  const r = await serialSessionManager.withPortReleased(port, async () => await mgr.flash({
+    python,
+    firmwarePath: fw,
+    config: cfg,
+    port,
+    onLog: (s) => outputChannel.append(s),
+    onStderr: (s) => outputChannel.append(s),
+    signal,
+  }));
+  if (r.success) {
+    setStatus("success", `flashed ${port}`);
+    vscode.window.showInformationMessage(`Flashed ${port} in ${r.durationMs}ms`);
+    const serial = serialAutoConnectSuppressed ? null : await focusAndConnectSerialConsole();
+    if (serial) {
+      await serial.client.reset().catch(() => {});
     }
-  } finally {
-    await restoreSerialMonitors(monitors, signal);
+    if (identity.isNew) {
+      await mirrorSrcToDevice({ changedOnly: false, forceFormat: true, signal });
+    }
+  } else {
+    setStatus("error", `flash FAILED`);
+    vscode.window.showErrorMessage(`Flash failed (exit ${r.exitCode})`);
   }
 }
 
@@ -665,7 +723,6 @@ async function doBuildAndFlash(signal?: AbortSignal): Promise<void> {
 }
 
 async function doInitProject(): Promise<void> {
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Initializing NodeMCU project...`);
   const iniPath = getIniPath();
   if (!iniPath) {
@@ -706,15 +763,26 @@ async function doInitProject(): Promise<void> {
   if (watcher) watcher.stop();
   watcher = new ConfigWatcher(iniPath);
   watcher.onChange((c) => {
+    const previous = cachedConfig;
+    const serialConfigChanged = !!previous
+      && (previous.nodemcu.port !== c.nodemcu.port || getConfiguredBaud(previous) !== getConfiguredBaud(c));
+    if (serialConfigChanged) {
+      void serialSessionManager.closeAll();
+    }
     cachedConfig = c;
     cachedFirmwarePath = null;
     refreshAll();
     updatePortStatusBar(c);
+    if (serialConfigChanged && !serialAutoConnectSuppressed) {
+      void focusAndConnectSerialConsole();
+    }
   });
   cachedConfig = loadConfig(iniPath);
   watcher.start();
+  await setSerialAutoConnectSuppressed(false);
   refreshAll();
   updatePortStatusBar(cachedConfig);
+  void focusAndConnectSerialConsole();
 }
 
 function isFilesystemError(error: string | undefined): boolean {
@@ -739,11 +807,12 @@ async function uploadWithFallback(
   localPath: string,
   remoteName: string,
 ): Promise<{ success: boolean; error?: string }> {
-  const direct = new DirectSerialUploader();
-  const directResult = await direct.upload(opts, localPath, remoteName, (s) => outputChannel.append(s));
-  if (directResult.success || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
+  const session = await serialSessionManager.switchPort(opts.port, opts.baud);
+  const client = new SerialDeviceClient(session);
+  const directResult = await client.upload(localPath, remoteName, { compile: opts.compile, signal: opts.signal });
+  if (directResult.success || !allowNodemcuToolFallback() || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
 
-  outputChannel.appendLine(`\nDirect serial upload failed (${directResult.error}). Retrying with nodemcu-tool...`);
+  outputChannel.appendLine(`\nShared serial upload failed (${directResult.error}). Retrying with nodemcu-tool...`);
   const tool = await nodemcuToolFallback(opts.python);
   if (!tool) return directResult;
   let r = await tool.upload(opts, localPath, remoteName, (s) => outputChannel.append(s));
@@ -763,44 +832,48 @@ async function uploadWithFallback(
 }
 
 async function listFilesWithFallback(opts: NodemcuToolOptions, promptInstall = true): Promise<{ success: boolean; files?: FileEntry[]; error?: string }> {
-  const direct = new DirectSerialUploader();
-  const directResult = await direct.listFiles(opts, (s) => outputChannel.append(s));
-  if (directResult.success || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
+  const session = await serialSessionManager.switchPort(opts.port, opts.baud);
+  const client = new SerialDeviceClient(session);
+  const directResult = await client.listFiles();
+  if (directResult.success || !allowNodemcuToolFallback() || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
 
-  outputChannel.appendLine(`\nDirect serial file listing failed (${directResult.error}). Retrying with nodemcu-tool...`);
+  outputChannel.appendLine(`\nShared serial file listing failed (${directResult.error}). Retrying with nodemcu-tool...`);
   const tool = await nodemcuToolFallback(opts.python, promptInstall);
   if (!tool) return directResult;
   return await tool.listFilesResult(opts, (s) => outputChannel.append(s));
 }
 
 async function removeWithFallback(opts: NodemcuToolOptions, remoteName: string): Promise<{ success: boolean; error?: string }> {
-  const direct = new DirectSerialUploader();
-  const directResult = await direct.remove(opts, remoteName, (s) => outputChannel.append(s));
-  if (directResult.success || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
+  const session = await serialSessionManager.switchPort(opts.port, opts.baud);
+  const client = new SerialDeviceClient(session);
+  const directResult = await client.remove(remoteName);
+  if (directResult.success || !allowNodemcuToolFallback() || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
 
-  outputChannel.appendLine(`\nDirect serial delete failed (${directResult.error}). Retrying with nodemcu-tool...`);
+  outputChannel.appendLine(`\nShared serial delete failed (${directResult.error}). Retrying with nodemcu-tool...`);
   const tool = await nodemcuToolFallback(opts.python);
   if (!tool) return directResult;
   return await tool.remove(opts, remoteName, (s) => outputChannel.append(s));
 }
 
 async function runFileWithFallback(opts: NodemcuToolOptions, remoteName: string): Promise<{ success: boolean; error?: string }> {
-  const direct = new DirectSerialUploader();
-  const directResult = await direct.runFile(opts, remoteName, (s) => outputChannel.append(s));
-  if (directResult.success || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
+  const session = await serialSessionManager.switchPort(opts.port, opts.baud);
+  const client = new SerialDeviceClient(session);
+  const directResult = await client.runFile(remoteName);
+  if (directResult.success || !allowNodemcuToolFallback() || !shouldUseNodemcuToolFallback(directResult.error)) return directResult;
 
-  outputChannel.appendLine(`\nDirect serial run failed (${directResult.error}). Retrying with nodemcu-tool...`);
+  outputChannel.appendLine(`\nShared serial run failed (${directResult.error}). Retrying with nodemcu-tool...`);
   const tool = await nodemcuToolFallback(opts.python);
   if (!tool) return directResult;
   return await tool.runFile(opts, remoteName, (s) => outputChannel.append(s));
 }
 
 async function resetWithFallback(opts: NodemcuToolOptions): Promise<{ success: boolean; error?: string }> {
-  const direct = new DirectSerialUploader();
-  const directReset = await direct.hardReset(opts, (s) => outputChannel.append(s));
+  const session = await serialSessionManager.switchPort(opts.port, opts.baud);
+  const client = new SerialDeviceClient(session);
+  const directReset = await client.reset();
   if (directReset.success) return { success: true };
-  outputChannel.appendLine(`Direct serial reset failed (${directReset.error}). Retrying with nodemcu-tool reset...`);
-  if (!shouldUseNodemcuToolFallback(directReset.error)) return directReset;
+  outputChannel.appendLine(`Shared serial reset failed (${directReset.error}). Retrying with nodemcu-tool reset...`);
+  if (!allowNodemcuToolFallback() || !shouldUseNodemcuToolFallback(directReset.error)) return directReset;
   const tool = await nodemcuToolFallback(opts.python);
   if (!tool) return directReset;
   const r = await tool.reset(opts, (s) => outputChannel.append(s));
@@ -810,14 +883,23 @@ async function resetWithFallback(opts: NodemcuToolOptions): Promise<{ success: b
 }
 
 async function formatWithFallback(opts: NodemcuToolOptions): Promise<{ success: boolean; error?: string }> {
+  const session = await serialSessionManager.switchPort(opts.port, opts.baud);
+  const client = new SerialDeviceClient(session);
+  const directResult = await client.mkfs();
+  if (directResult.success || !allowNodemcuToolFallback()) {
+    return directResult;
+  }
   const tool = await nodemcuToolFallback(opts.python);
-  if (!tool) return { success: false, error: "nodemcu-tool is unavailable for filesystem format" };
+  if (!tool) return directResult;
   return await tool.mkfs(opts, (s) => outputChannel.append(s));
 }
 
 async function ensureKnownDevice(cfg: NodemcuConfig, port: string, signal?: AbortSignal): Promise<{ allowed: boolean; identity?: DeviceIdentity; isNew: boolean }> {
   const python = getPythonPath();
-  const result = await readDeviceIdentity({ shell: new Shell(), python, port, baud: cfg.nodemcu.baud, signal });
+  const result = await serialSessionManager.withPortReleased(
+    port,
+    async () => await readDeviceIdentity({ shell: new Shell(), python, port, baud: getConfiguredBaud(cfg), signal }),
+  );
   if (!result.success || !result.identity) {
     vscode.window.showErrorMessage(`Unable to identify attached NodeMCU device: ${result.error}`);
     return { allowed: false, isNew: false };
@@ -884,7 +966,10 @@ async function ensureFirmwareForSelectedModules(
     .map(([k]) => k)
     .sort();
 
-  const info = await readDeviceFirmwareInfo({ port, baud: cfg.nodemcu.baud, signal });
+  const info = await serialSessionManager.withPortReleased(
+    port,
+    async () => await readDeviceFirmwareInfo({ port, baud: getConfiguredBaud(cfg), signal }),
+  );
   if (info) {
     outputChannel.appendLine(
       `Device is running NodeMCU ${info.version ?? "(unknown version)"} with ${info.modules.length} module(s): ${info.modules.join(", ")}.`,
@@ -920,13 +1005,13 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
   if (!cfg) {
     return;
   }
+  await focusAndConnectSerialConsole();
   const srcDir = getConfiguredSrcDir(cfg);
   if (!srcDir || !fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
     vscode.window.showWarningMessage("This workspace is not a valid NodeMCU project. Run 'NodeMCU: Initialize Project' first.");
     updateProjectContext();
     return;
   }
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Mirroring src/ to device...`);
 
   const python = getPythonPath();
@@ -943,30 +1028,28 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     }
   }
 
-  const monitors = await closeSerialMonitors();
-  try {
-    const identity = await ensureKnownDevice(cfg, port, opts.signal);
-    if (!identity.allowed) return;
+  const identity = await ensureKnownDevice(cfg, port, opts.signal);
+  if (!identity.allowed) return;
 
-    const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal: opts.signal };
-    if (opts.forceFormat || identity.isNew) {
-      setStatus("uploading", `formatting ${port}...`);
-      const formatted = await formatWithFallback(toolOpts);
-      if (!formatted.success) {
-        setStatus("error", "format FAILED");
-        vscode.window.showErrorMessage(`Device filesystem format failed: ${formatted.error}`);
-        return;
-      }
-    }
-
-    const remote = await listFilesWithFallback(toolOpts, false);
-    if (!remote.success) {
-      setStatus("error", "sync FAILED");
-      vscode.window.showErrorMessage(`Unable to list device files before sync: ${remote.error}`);
+  const toolOpts = { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal: opts.signal };
+  if (opts.forceFormat || identity.isNew) {
+    setStatus("uploading", `formatting ${port}...`);
+    const formatted = await formatWithFallback(toolOpts);
+    if (!formatted.success) {
+      setStatus("error", "format FAILED");
+      vscode.window.showErrorMessage(`Device filesystem format failed: ${formatted.error}`);
       return;
     }
+  }
 
-    const uploadTimestamps = extensionContext
+  const remote = await listFilesWithFallback(toolOpts, false);
+  if (!remote.success) {
+    setStatus("error", "sync FAILED");
+    vscode.window.showErrorMessage(`Unable to list device files before sync: ${remote.error}`);
+    return;
+  }
+
+  const uploadTimestamps = extensionContext
     ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
     : {};
   const plan = planMirrorSync({
@@ -1011,8 +1094,6 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     await extensionContext.workspaceState.update("nodemcu.uploadTimestamps", uploadTimestamps);
   }
 
-  // Enabled Lua modules ride along with the src sync — checking a module in the
-  // side panel is enough; no separate manual "Sync Lua Modules" step.
   if (fw) {
     const mod = await reconcileLuaModulesOnDevice(toolOpts, cfg, fw, remote.files ?? []);
     successCount += mod.uploaded + mod.removed;
@@ -1028,9 +1109,6 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
   } else if (successCount > 0) {
     updateSyncTimestamp();
     setStatus("success", `synced ${successCount} operation(s) to ${port}`);
-  }
-  } finally {
-    await restoreSerialMonitors(monitors, opts.signal);
   }
 }
 
@@ -1130,8 +1208,8 @@ async function reconcileLuaModulesOnDevice(
 async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: AbortSignal): Promise<void> {
   const srcDir = getConfiguredSrcDir(cfg);
   if (!srcDir) return;
+  await focusAndConnectSerialConsole();
 
-  outputChannel.show(true);
   const remoteName = path.relative(srcDir, uri.fsPath).replace(/\\/g, "/");
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Uploading ${remoteName}...`);
 
@@ -1148,76 +1226,65 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
   const python = getPythonPath();
   const port = await ensurePort(cfg);
   if (!port) return;
-  const monitors = await closeSerialMonitors();
-  try {
-    const identity = await ensureKnownDevice(cfg, port, signal);
-    if (!identity.allowed) return;
+  const identity = await ensureKnownDevice(cfg, port, signal);
+  if (!identity.allowed) return;
 
-    const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+  const toolOpts = { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
 
-    setStatus("uploading", `uploading ${remoteName}...`);
-    const result = await uploadWithFallback(toolOpts, uri.fsPath, remoteName);
-    if (!result.success) {
-      setStatus("error", `upload FAILED: ${remoteName}`);
-      outputChannel.appendLine(`Failed to upload ${remoteName}: ${result.error}`);
-      return;
-    }
-    outputChannel.appendLine(`Uploaded ${remoteName}`);
-
-    // Keep enabled Lua modules in sync as part of every upload.
-    if (fw) {
-      const mod = await reconcileLuaModulesOnDevice(toolOpts, cfg, fw);
-      if (mod.failed > 0) {
-        setStatus("error", `${remoteName} uploaded, but ${mod.failed} module(s) failed to sync`);
-      }
-    }
-
-    await resetWithFallback(toolOpts);
-    updateSyncTimestamp();
-    setStatus("success", `uploaded ${remoteName}`);
-  } finally {
-    await restoreSerialMonitors(monitors, signal);
+  setStatus("uploading", `uploading ${remoteName}...`);
+  const result = await uploadWithFallback(toolOpts, uri.fsPath, remoteName);
+  if (!result.success) {
+    setStatus("error", `upload FAILED: ${remoteName}`);
+    outputChannel.appendLine(`Failed to upload ${remoteName}: ${result.error}`);
+    return;
   }
+  outputChannel.appendLine(`Uploaded ${remoteName}`);
+
+  if (fw) {
+    const mod = await reconcileLuaModulesOnDevice(toolOpts, cfg, fw);
+    if (mod.failed > 0) {
+      setStatus("error", `${remoteName} uploaded, but ${mod.failed} module(s) failed to sync`);
+    }
+  }
+
+  await resetWithFallback(toolOpts);
+  updateSyncTimestamp();
+  setStatus("success", `uploaded ${remoteName}`);
 }
 
 async function handleFileDelete(event: vscode.FileDeleteEvent): Promise<void> {
   const cfg = getConfigOrNull();
   if (!cfg) return;
   if (!cfg.sync.last_timestamp) return;
+  await focusAndConnectSerialConsole();
 
   const srcDir = getConfiguredSrcDir(cfg);
   if (!srcDir) return;
 
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Handling file deletion...`);
 
   await commandQueue.enqueue("Delete file", async (signal) => {
     const python = getPythonPath();
     const port = await ensurePort(cfg);
     if (!port) return;
-    const monitors = await closeSerialMonitors();
-    try {
-      const identity = await ensureKnownDevice(cfg, port, signal);
-      if (!identity.allowed) return;
+    const identity = await ensureKnownDevice(cfg, port, signal);
+    if (!identity.allowed) return;
 
-      const toolOpts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+    const toolOpts = { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
 
-      for (const uri of event.files) {
-        if (uri.scheme !== "file") continue;
-        const rel = path.relative(srcDir, uri.fsPath);
-        if (rel.length === 0 || rel.startsWith("..") || path.isAbsolute(rel)) continue;
-        const remoteName = rel.replace(/\\/g, "/");
-        setStatus("uploading", `removing ${remoteName}...`);
-        const result = await removeWithFallback(toolOpts, remoteName);
-        if (result.success) {
-          updateSyncTimestamp();
-          outputChannel.appendLine(`Removed ${remoteName}`);
-        } else {
-          outputChannel.appendLine(`Failed to remove ${remoteName}: ${result.error}`);
-        }
+    for (const uri of event.files) {
+      if (uri.scheme !== "file") continue;
+      const rel = path.relative(srcDir, uri.fsPath);
+      if (rel.length === 0 || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+      const remoteName = rel.replace(/\\/g, "/");
+      setStatus("uploading", `removing ${remoteName}...`);
+      const result = await removeWithFallback(toolOpts, remoteName);
+      if (result.success) {
+        updateSyncTimestamp();
+        outputChannel.appendLine(`Removed ${remoteName}`);
+      } else {
+        outputChannel.appendLine(`Failed to remove ${remoteName}: ${result.error}`);
       }
-    } finally {
-      void restoreSerialMonitors(monitors, signal);
     }
   });
 }
@@ -1238,10 +1305,9 @@ async function doUploadChanges(signal?: AbortSignal): Promise<void> {
 async function doRunFile(signal?: AbortSignal, item?: { remoteFile?: FileEntry; module?: LuaModuleInfo }): Promise<void> {
   const cfg = getConfigOrNull();
   if (!cfg) return;
+  await focusAndConnectSerialConsole();
   const port = await ensurePort(cfg);
   if (!port) return;
-  const monitors = await closeSerialMonitors();
-  try {
   let remoteName = item?.remoteFile?.name;
   if (!remoteName) {
     const fw = await getFirmwarePath();
@@ -1256,7 +1322,7 @@ async function doRunFile(signal?: AbortSignal, item?: { remoteFile?: FileEntry; 
   }
   const python = getPythonPath();
   setStatus("uploading", `running ${remoteName}...`);
-  const opts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+  const opts = { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
   const r = await runFileWithFallback(opts, remoteName);
   if (r.success) {
     setStatus("success", `ran ${remoteName}`);
@@ -1265,38 +1331,32 @@ async function doRunFile(signal?: AbortSignal, item?: { remoteFile?: FileEntry; 
     setStatus("error", "run FAILED");
     vscode.window.showErrorMessage(`Failed to run ${remoteName}: ${r.error}`);
   }
-  } finally {
-    await restoreSerialMonitors(monitors, signal);
-  }
 }
 
 async function doResetDevice(signal?: AbortSignal): Promise<void> {
   const cfg = getConfigOrNull();
   if (!cfg) return;
+  await focusAndConnectSerialConsole();
   const port = await ensurePort(cfg);
   if (!port) return;
-  const monitors = await closeSerialMonitors();
-  try {
-    const python = getPythonPath();
-    setStatus("uploading", `resetting device...`);
-    const opts = { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
-    const r = await resetWithFallback(opts);
-    if (!r.success) {
-      setStatus("error", "reset FAILED");
-      vscode.window.showErrorMessage(`Failed to reset device: ${r.error}`);
-      return;
-    }
-    setStatus("success", `reset device`);
-    vscode.window.showInformationMessage(`Reset device successfully.`);
-  } finally {
-    await restoreSerialMonitors(monitors, signal);
+  const python = getPythonPath();
+  setStatus("uploading", `resetting device...`);
+  const opts = { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+  const r = await resetWithFallback(opts);
+  if (!r.success) {
+    setStatus("error", "reset FAILED");
+    vscode.window.showErrorMessage(`Failed to reset device: ${r.error}`);
+    return;
   }
+  setStatus("success", `reset device`);
+  vscode.window.showInformationMessage(`Reset device successfully.`);
 }
 
 async function doSyncLuaModules(signal?: AbortSignal): Promise<void> {
   const cfg = getConfigOrNull();
   const fw = await getFirmwarePath();
   if (!cfg || !fw) return;
+  await focusAndConnectSerialConsole();
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
   const resolved = await resolveAllLuaModules(workspaceRoot, fw, cfg);
@@ -1308,25 +1368,20 @@ async function doSyncLuaModules(signal?: AbortSignal): Promise<void> {
   const python = getPythonPath();
   const port = await ensurePort(cfg);
   if (!port) return;
-  const monitors = await closeSerialMonitors();
-  try {
-    const identity = await ensureKnownDevice(cfg, port, signal);
-    if (!identity.allowed) return;
-    for (const m of local) {
-      setStatus("uploading", `uploading ${m.name}...`);
-      const r = await uploadWithFallback(
-        { python, port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: true, signal },
-        m.resolvedLocalPath!,
-        m.name + ".lc",
-      );
-      if (!r.success) {
-        vscode.window.showErrorMessage(`Failed to upload ${m.name}: ${r.error}`);
-      }
+  const identity = await ensureKnownDevice(cfg, port, signal);
+  if (!identity.allowed) return;
+  for (const m of local) {
+    setStatus("uploading", `uploading ${m.name}...`);
+    const r = await uploadWithFallback(
+      { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: true, signal },
+      m.resolvedLocalPath!,
+      m.name + ".lc",
+    );
+    if (!r.success) {
+      vscode.window.showErrorMessage(`Failed to upload ${m.name}: ${r.error}`);
     }
-    setStatus("success", `synced ${local.length} module(s)`);
-  } finally {
-    await restoreSerialMonitors(monitors, signal);
   }
+  setStatus("success", `synced ${local.length} module(s)`);
 }
 
 async function doAcceptLuaModuleCompletion(signal: AbortSignal | undefined, moduleName: string, source: string): Promise<void> {
@@ -1344,12 +1399,10 @@ async function doAcceptLuaModuleCompletion(signal: AbortSignal | undefined, modu
 }
 
 async function doUploadAndMonitor(signal?: AbortSignal): Promise<void> {
-  await closeSerialMonitors();
-  // doUploadChanges → mirrorSrcToDevice now also reconciles enabled Lua modules,
-  // so no separate doSyncLuaModules call is needed here.
+  await focusAndConnectSerialConsole();
   await doUploadChanges(signal);
   if (statusEmitter.getState() === "error") return;
-  await doOpenSerialMonitor(signal);
+  await focusAndConnectSerialConsole();
 }
 
 async function doRegenerateLuaApi(): Promise<void> {
@@ -1358,7 +1411,6 @@ async function doRegenerateLuaApi(): Promise<void> {
   if (!cfg || !fw) return;
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Regenerating Lua API files...`);
   const modules = Object.entries(cfg.c_modules).filter(([_, v]) => v).map(([k]) => k);
   const apiPath = path.join(workspaceRoot, ".vscode", "nodemcu-api.lua");
@@ -1376,7 +1428,6 @@ async function doAddLuaModule(item?: { module: LuaModuleInfo }): Promise<void> {
     return;
   }
   if (!fw) return;
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Adding Lua module...`);
   const modules = item ? [item.module] : await listLuaModulesFromFirmware(fw);
   if (modules.length === 0) {
@@ -1409,7 +1460,6 @@ async function doToggleLuaModule(item?: { module: LuaModuleInfo }): Promise<void
     await doAddLuaModule();
     return;
   }
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Toggling Lua module ${item.module.name}...`);
   const cfg = getConfigOrNull();
   if (!cfg) {
@@ -1431,7 +1481,6 @@ async function doToggleLuaModule(item?: { module: LuaModuleInfo }): Promise<void
 }
 
 async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Toggling C module...`);
   const cfg = getConfigOrNull();
   if (!cfg) {
@@ -1463,7 +1512,6 @@ async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
 }
 
 function doRefreshExplorer(): void {
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Refreshing explorer...`);
   refreshAll();
   void refreshDetectedPortsAndMaybeSelect();
@@ -1472,78 +1520,38 @@ function doRefreshExplorer(): void {
 function doOpenIni(): void {
   const iniPath = getIniPath();
   if (!iniPath) return;
-  outputChannel.show(true);
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Opening nodemcu.ini...`);
   vscode.window.showTextDocument(vscode.Uri.file(iniPath));
 }
 
 export async function closeSerialMonitors(): Promise<ClosedSerialMonitor[]> {
-  const monitors = vscode.window.terminals.filter(t => t.name.startsWith("NodeMCU: "));
-  const closed = monitors.map((terminal) => ({
-    name: terminal.name,
-    port: terminal.name.slice("NodeMCU: ".length).trim(),
-  })).filter((monitor) => monitor.port.length > 0);
-  const pids = await Promise.all(monitors.map(async (t) => {
-    try {
-      return await t.processId;
-    } catch {
-      return undefined;
-    }
-  }));
-  for (const t of monitors) {
-    try {
-      t.sendText("\x03", false);
-    } catch {
-      // Ignore terminals that are already shutting down.
-    }
-    t.dispose();
-  }
-  if (process.platform === "win32") {
-    for (const pid of pids) {
-      if (!pid) continue;
-      try {
-        child_process.spawnSync("taskkill", ["/pid", String(pid), "/f", "/t"], { windowsHide: true });
-      } catch {
-        // Best-effort cleanup; the terminal may already be gone.
-      }
-    }
-  }
-  if (monitors.length > 0 && process.platform === "win32") {
-    await new Promise(r => setTimeout(r, 2500)); // Increased from 1000 to 2500
-  }
-  return closed;
+  return [];
 }
-
-function openSerialMonitorTerminal(port: string, baud: number): void {
-  const python = getPythonPath();
-  const term = vscode.window.createTerminal({
-    name: `NodeMCU: ${port}`,
-    shellPath: python,
-    shellArgs: ["-m", "serial.tools.miniterm", port, String(baud)],
-  });
-  term.show();
-}
-
-const SERIAL_MONITOR_BAUD = 115200;
 
 export async function restoreSerialMonitors(monitors: ClosedSerialMonitor[], signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted || monitors.length === 0) return;
-  if (process.platform === "win32") {
-    await new Promise(r => setTimeout(r, 1500));
-  }
-  const uniquePorts = Array.from(new Set(monitors.map((monitor) => monitor.port)));
-  for (const port of uniquePorts) {
-    openSerialMonitorTerminal(port, SERIAL_MONITOR_BAUD);
-  }
+  void monitors;
+  void signal;
 }
 
 async function doOpenSerialMonitor(_signal?: AbortSignal): Promise<void> {
-  const cfg = getConfigOrNull();
-  if (!cfg) return;
-  const port = await ensurePort(cfg);
-  if (!port) return;
-  await closeSerialMonitors();
-  openSerialMonitorTerminal(port, SERIAL_MONITOR_BAUD);
+  await focusAndConnectSerialConsole({ force: true });
+}
+
+async function doDisconnectSerialSession(): Promise<void> {
+  await setSerialAutoConnectSuppressed(true);
+  await serialSessionManager.closeAll();
+  await updatePortStatusBar(getConfigOrNull());
+}
+
+async function doReleaseSerialPort(): Promise<void> {
+  await setSerialAutoConnectSuppressed(true);
+  await serialSessionManager.closeAll();
+  await updatePortStatusBar(getConfigOrNull());
+  vscode.window.showInformationMessage("NodeMCU released the serial port.");
+}
+
+async function doReconnectSerialPort(): Promise<void> {
+  await focusAndConnectSerialConsole({ force: true });
 }
 
 function buildDeviceExplorerProvider(): AsyncTreeProvider {
@@ -1697,7 +1705,6 @@ function scheduleSrcSync(document: vscode.TextDocument): void {
     if (!uri) return;
     const currentCfg = getConfigOrNull();
     if (!currentCfg) return;
-    outputChannel.show(true);
     outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] scheduleSrcSync: last_timestamp=${currentCfg.sync.last_timestamp || '(empty)'}`);
     if (currentCfg.sync.last_timestamp) {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, uploading single file...`);
@@ -1712,14 +1719,35 @@ function scheduleSrcSync(document: vscode.TextDocument): void {
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
   outputChannel = vscode.window.createOutputChannel("NodeMCU");
+  serialAutoConnectSuppressed = context.workspaceState.get<boolean>(SERIAL_AUTO_CONNECT_SUPPRESSED_KEY) ?? false;
   void ensurePython(context);
   commandQueue = new CommandQueue();
   statusEmitter = new StatusEmitter();
+  serialSessionManager = new SerialSessionManager();
+  serialConsoleViewProvider = new SerialConsoleViewProvider(context.extensionUri, serialSessionManager, {
+    ensureSession: async () => {
+      const cfg = getConfigOrNull();
+      if (!cfg) {
+        return undefined;
+      }
+      await ensureSerialSession(cfg);
+      return serialSessionManager.getCurrentSession();
+    },
+    log: (message) => outputChannel?.appendLine(message),
+  });
   portStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
   portStatusBarItem.command = "nodemcu-vscode.selectPort";
   queueStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
   queueStatusBarItem.command = "nodemcu-vscode.cancelQueued";
   commandQueue.on("change", () => updateQueueStatusBar());
+  context.subscriptions.push(
+    serialSessionManager,
+    serialConsoleViewProvider,
+    serialSessionManager.onDidChangeSession(() => {
+      void updatePortStatusBar(getConfigOrNull());
+    }),
+    vscode.window.registerWebviewViewProvider("nodemcu.serialConsole", serialConsoleViewProvider),
+  );
 
   context.subscriptions.push(portStatusBarItem, queueStatusBarItem, outputChannel);
   setStatus("idle", "NodeMCU: idle");
@@ -1782,15 +1810,27 @@ export function activate(context: vscode.ExtensionContext): void {
   if (iniPath && fs.existsSync(iniPath)) {
     watcher = new ConfigWatcher(iniPath);
     watcher.onChange((c) => {
-      if (cachedConfig && cachedConfig.nodemcu.firmware_path !== c.nodemcu.firmware_path) {
+      const previous = cachedConfig;
+      if (previous && previous.nodemcu.firmware_path !== c.nodemcu.firmware_path) {
         cachedFirmwarePath = null;
+      }
+      const serialConfigChanged = !!previous
+        && (previous.nodemcu.port !== c.nodemcu.port || getConfiguredBaud(previous) !== getConfiguredBaud(c));
+      if (serialConfigChanged) {
+        void serialSessionManager.closeAll();
       }
       cachedConfig = c;
       refreshAll();
       updatePortStatusBar(c);
+      if (serialConfigChanged && !serialAutoConnectSuppressed) {
+        void focusAndConnectSerialConsole();
+      }
     });
     cachedConfig = watcher.current();
     watcher.start();
+    if (!serialAutoConnectSuppressed) {
+      void focusAndConnectSerialConsole();
+    }
   }
 
   refreshAll();
@@ -1804,6 +1844,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (portRefreshTimer) clearInterval(portRefreshTimer);
     if (srcSaveTimer) clearTimeout(srcSaveTimer);
     lastSavedUri = undefined;
+    void serialSessionManager.closeAll();
   }));
 
   context.subscriptions.push(
@@ -1818,7 +1859,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.resetDevice", commandWithOperation("Reset Device", doResetDevice)),
     vscode.commands.registerCommand("nodemcu-vscode.syncLuaModules", commandWithOperation("Sync Lua Modules", doSyncLuaModules)),
     vscode.commands.registerCommand("nodemcu-vscode.acceptLuaModuleCompletion", commandWithOperation("Accept Lua Module", doAcceptLuaModuleCompletion)),
-    vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", commandWithOperation("Open Serial Monitor", doOpenSerialMonitor)),
+    vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", doOpenSerialMonitor),
+    vscode.commands.registerCommand("nodemcu-vscode.disconnectSerialSession", doDisconnectSerialSession),
+    vscode.commands.registerCommand("nodemcu-vscode.releaseSerialPort", doReleaseSerialPort),
+    vscode.commands.registerCommand("nodemcu-vscode.reconnectSerialPort", commandWithOperation("Reconnect Serial Port", doReconnectSerialPort)),
     vscode.commands.registerCommand("nodemcu-vscode.cancelQueued", () => {
       commandQueue.cancelPending();
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Queued commands cancelled`);
@@ -1847,4 +1891,5 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   if (portRefreshTimer) clearInterval(portRefreshTimer);
   watcher?.stop();
+  void serialSessionManager?.closeAll();
 }

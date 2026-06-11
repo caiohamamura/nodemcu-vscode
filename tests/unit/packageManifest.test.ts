@@ -7,12 +7,21 @@ describe("package manifest", () => {
     expect(manifest.extensionPack).toContain("sumneko.lua");
   });
 
-  it("contributes only workspace-backed NodeMCU views", () => {
+  it("contributes workspace-backed NodeMCU side views and the serial bottom panel", () => {
     const views = manifest.contributes.views["nodemcu-vscode"].map((view) => view.id);
+    const serialViews = manifest.contributes.views["nodemcu-serial-panel"];
     const commands = manifest.contributes.commands.map((command) => command.command);
     expect(views).toEqual(["nodemcu.deviceExplorer", "nodemcu.projectTasks", "nodemcu.luaModules", "nodemcu.cModules"]);
+    expect(serialViews).toEqual([
+      expect.objectContaining({ id: "nodemcu.serialConsole", type: "webview" }),
+    ]);
+    expect(manifest.contributes.viewsContainers.panel).toContainEqual(
+      expect.objectContaining({ id: "nodemcu-serial-panel", title: "NodeMCU Serial" }),
+    );
     expect(views).not.toContain("nodemcu.deviceFiles");
     expect(commands).toContain("nodemcu-vscode.uploadAndMonitor");
+    expect(commands).toContain("nodemcu-vscode.releaseSerialPort");
+    expect(commands).not.toContain("nodemcu-vscode.connectSerialSession");
     expect(commands).not.toContain("nodemcu-vscode.openLiveDeviceFile");
     expect(commands).not.toContain("nodemcu-vscode.downloadFile");
     expect(commands).not.toContain("nodemcu-vscode.deleteFile");

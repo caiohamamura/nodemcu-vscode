@@ -41,33 +41,28 @@ describe("serial monitor lifecycle", () => {
     mockWindow.createdTerminals.length = 0;
   });
 
-  it("closes NodeMCU serial monitors and records ports for restart", async () => {
+  it("does not manage external terminals anymore", async () => {
     const monitor = fakeTerminal("NodeMCU: COM7");
     const other = fakeTerminal("PowerShell");
     mockWindow.terminals.push(monitor, other);
 
     const closed = await closeSerialMonitors();
 
-    expect(closed).toEqual([{ name: "NodeMCU: COM7", port: "COM7" }]);
-    expect(monitor.sent).toEqual([{ text: "\x03", addNewLine: false }]);
-    expect(monitor.disposed).toBe(true);
+    expect(closed).toEqual([]);
+    expect(monitor.sent).toEqual([]);
+    expect(monitor.disposed).toBe(false);
     expect(other.disposed).toBe(false);
   });
 
-  it("restores previously open serial monitors after live-save upload", async () => {
+  it("restoreSerialMonitors is a no-op with the shared serial console", async () => {
     const closed: ClosedSerialMonitor[] = [{ name: "NodeMCU: COM7", port: "COM7" }];
 
     await restoreSerialMonitors(closed);
 
-    expect(mockWindow.createdTerminals).toHaveLength(1);
-    expect(mockWindow.createdTerminals[0].name).toBe("NodeMCU: COM7");
-    expect(mockWindow.createdTerminals[0].shown).toBe(true);
-    expect(mockWindow.createdTerminals[0].shellPath).toBe("python");
-    expect(mockWindow.createdTerminals[0].shellArgs).toEqual(["-m", "serial.tools.miniterm", "COM7", "115200"]);
-    expect(mockWindow.createdTerminals[0].sent).toEqual([]);
+    expect(mockWindow.createdTerminals).toHaveLength(0);
   });
 
-  it("does not restore serial monitors after an aborted save", async () => {
+  it("still does nothing when aborted", async () => {
     const controller = new AbortController();
     controller.abort();
 
