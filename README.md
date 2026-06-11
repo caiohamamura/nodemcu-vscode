@@ -1,262 +1,346 @@
-# NodeMCU VSCode
+# NodeMCU Lua for VS Code
 
-A VS Code extension (`displayName: "NodeMCU"`) for cross-platform Lua firmware
-development on **NodeMCU / ESP8266**: build, flash, upload, and explore.
+<p align="center">
+  <img src="resources/icons/nodemcu.png" alt="NodeMCU Lua logo" width="128">
+</p>
 
-> Looking for the agent / handoff guide? See [AGENTS.md](AGENTS.md). Looking for
-> Claude Code specifics? See [CLAUDE.md](CLAUDE.md).
+A VS Code extension for end-to-end Lua development on NodeMCU / ESP8266 boards.
+It initializes projects, manages a known-good NodeMCU firmware checkout, builds
+and flashes firmware, syncs Lua files to the device, opens a serial monitor, and
+adds IntelliSense stubs for NodeMCU globals.
 
----
+The extension is designed so you do not need to clone `nodemcu-firmware`
+manually. On first use it downloads and patches the managed firmware in VS Code
+extension storage. You only need a custom firmware checkout if you deliberately
+configure one.
 
-## Features
+## UI Preview
 
-- **Build firmware** — downloads and manages the NodeMCU firmware source
-  (`mbedtls-2.28.10-beta`), then runs CMake / Ninja / Make.
-- **Flash firmware** — invokes the bundled `esptool.py` (or `python -m esptool`).
-- **Upload Lua files** to the device via `nodemcu-tool` (auto-installs if missing).
-- **Transactional src/ sync** — saves upload the changed file without scanning
-  the whole project. First save performs a full mirror; subsequent saves are
-  single-file uploads. Deletions are mirrored to the device.
-- **Sync Lua modules** declared in `nodemcu.ini` to the device.
-- **Device Explorer** sidebar — enumerate serial ports and auto-select the
-  connected NodeMCU when detection is unambiguous.
-- **Device Files** sidebar — browse, live edit, run, download, and delete files
-  on the connected NodeMCU (`nodemcu-tool fsinfo --json`).
-- **Lua module picker** — list all modules in the managed firmware `lua_modules/`
-  and add to project with a click.
-- **Lua module autocomplete** — typing a firmware Lua module name can insert
-  `name = require("name")`, enable it in `nodemcu.ini`, and sync it to the device.
-- **C module picker** — toggle which C modules get compiled into the firmware.
-- **Upload and Monitor** — `F5` uploads changed files, syncs Lua modules, and
-  opens the serial monitor, rebuilding/flashing first if C modules changed.
-- **Lua API stub generator** — produces `.vscode/nodemcu-api.lua` and
-  `.luarc.json` for full IntelliSense via the `sumneko.lua` extension.
-- **Log channel** — every action opens the **NodeMCU** output channel with
-  timestamped entries so you can follow what the extension is doing.
-- **Cross-platform** — works on Linux, macOS, and Windows.
+The marketplace logo is packaged from:
 
-The extension does **not** require users to clone `nodemcu-firmware`. It
-downloads and caches a known-good archive into the VS Code extension global
-storage on first use, hydrates required submodules, and applies compatibility
-patches. A custom local checkout is only needed when the user deliberately sets
-`firmware_path` in `nodemcu.ini` or `nodemcu-vscode.firmwarePath` in settings.
+<p>
+  <img src="resources/icons/nodemcu.png" alt="NodeMCU Lua logo" width="96">
+</p>
 
----
+The Activity Bar icon is packaged from:
 
-## Quick start
+<p>
+  <img src="resources/icons/nodemcu.svg" alt="NodeMCU Activity Bar icon" width="48">
+</p>
 
-1. Open your project folder in VS Code.
-2. Run **NodeMCU: Initialize Project** from the command palette.
-3. Edit `nodemcu.ini` — toggle `[c_modules]`; `port` is auto-selected when only
-   one NodeMCU-like serial device is detected.
-4. Run **NodeMCU: Build & Flash** (`Ctrl+Alt+B`). The extension downloads and
-   reuses its managed firmware copy automatically.
-5. Press **F5** for the normal edit loop: upload changed files, sync Lua modules,
-   and open the serial monitor.
-6. **Save any file** inside your project's `src/` directory — the extension
-   automatically syncs it to the device (full mirror on first save, single-file
-   upload thereafter). Follow progress in the **NodeMCU** output channel.
+In VS Code, open the NodeMCU Activity Bar item to access Device Explorer, Lua
+Modules, and C Modules. When a folder is not initialized yet, the NodeMCU view
+shows an **Initialize NodeMCU Project** action.
 
-The Lua language extension (`sumneko.lua`) is included in this extension's
-`extensionPack` so IntelliSense can use the generated stubs without extra
-installs.
+## Quick Start
 
----
+1. Install the extension in VS Code.
+2. Open the folder that will contain your NodeMCU project.
+3. Open the NodeMCU Activity Bar item.
+4. Click **Initialize NodeMCU Project**.
+5. Connect your NodeMCU / ESP8266 board with a USB data cable.
+6. Follow progress in the **NodeMCU** output channel.
+7. Edit Lua files in `src/` and save them.
+8. Press `F5` to upload changes and open the serial monitor.
+
+The first setup can take a while because the extension downloads tools and
+firmware, builds the selected firmware image, flashes the board, and performs
+the first device filesystem sync.
+
+After the first successful setup, normal development is faster. Saving a file in
+`src/` uploads only that changed file, and deleting a file from `src/` removes
+the matching file from the device.
+
+## What Gets Created
+
+Running **NodeMCU: Initialize Project** creates a project like this:
+
+```text
+your-project/
+|- nodemcu.ini
+`- src/
+   `- init.lua
+```
+
+Put your Lua application files in `src/`. The extension watches this directory
+and syncs it to the device.
+
+## First Run vs Later Runs
+
+| Action | First run | Later runs |
+| --- | --- | --- |
+| Project setup | Creates `nodemcu.ini` and `src/init.lua` | Reuses existing project files |
+| Firmware source | Downloads managed firmware | Reuses cached firmware |
+| Firmware build | Builds selected C modules | Rebuilds only when C modules change |
+| Flashing | Flashes the ESP8266 | Needed only after firmware changes |
+| File sync | Formats and mirrors `src/` to the device | Uploads changed files and mirrors deletions |
+| Serial monitor | Opens after upload with `F5` | Closes and reopens around uploads |
+
+## Core Workflow
+
+1. Edit a Lua file in `src/`.
+2. Save the file.
+3. The **NodeMCU** output channel opens and logs the upload.
+4. The first sync mirrors the whole `src/` directory.
+5. Later saves upload only the saved file.
+6. Press `F5` for **Upload and Monitor**.
+
+`F5` closes any existing NodeMCU serial monitor, uploads pending changes, syncs
+enabled Lua modules, then opens a fresh `python -m serial.tools.miniterm`
+terminal for the selected port.
+
+## Sidebar Views
+
+### Device Explorer
+
+Shows detected serial ports. Click a port to select it. When detection is
+unambiguous, the extension can select the port automatically and write it to
+`nodemcu.ini`.
+
+The extension keeps a configured port when it is still available. If the
+configured port disappears, it only auto-selects a replacement when exactly one
+serial port is present or exactly one NodeMCU-like port is detected.
+
+### Lua Modules
+
+Lists Lua helper modules from the managed firmware library. Checking a module
+adds it to `[lua_modules]` in `nodemcu.ini`; unchecking it removes the module
+from the device on the next sync.
+
+Lua module autocomplete also participates in this workflow. Accepting a module
+completion inserts `name = require("name")`, enables the module in
+`nodemcu.ini`, refreshes the sidebar, and syncs the module to the device.
+
+### C Modules
+
+Lists firmware C modules from `app/modules` plus supported optional/library
+modules. Checking a module enables it in `[c_modules]`. Changing C modules can
+require a firmware rebuild and flash because C modules are compiled into the
+firmware image.
+
+The `file` module is mandatory for file upload support and cannot be disabled.
+
+## Commands
+
+Open the Command Palette and run commands under the **NodeMCU** category.
+
+| Command | Keybinding | Use |
+| --- | --- | --- |
+| `NodeMCU: Initialize Project` | | Create `nodemcu.ini`, `src/`, and starter Lua files. |
+| `NodeMCU: Build Firmware` | `Ctrl+Shift+B` | Build the selected firmware image. |
+| `NodeMCU: Flash Firmware` | | Flash the most recent firmware build to the ESP8266. |
+| `NodeMCU: Build & Flash` | `Ctrl+Alt+B` | Build firmware, then flash it. |
+| `NodeMCU: Upload File to Device` | | Upload the current file when it is inside `src/`. |
+| `NodeMCU: Upload Changes to Device` | | Sync local `src/` changes to the device. |
+| `NodeMCU: Upload and Monitor` | `F5` | Upload changes, sync Lua modules, and open the serial monitor. |
+| `NodeMCU: Run File on Device` | | Execute a remote Lua file on the board. |
+| `NodeMCU: Reset Device` | | Reset the connected board. |
+| `NodeMCU: Refresh Device Explorer` | | Refresh detected ports and device data. |
+| `NodeMCU: Sync Lua Modules to Device` | | Compile and upload enabled Lua modules. |
+| `NodeMCU: Add Lua Module from Library` | | Pick a firmware Lua module and enable it. |
+| `NodeMCU: Toggle C Module` | | Enable or disable a firmware C module. |
+| `NodeMCU: Regenerate Lua API Stubs` | | Recreate `.vscode/nodemcu-api.lua` and `.luarc.json`. |
+| `NodeMCU: Open nodemcu.ini` | | Open the project configuration file. |
+| `NodeMCU: Open Serial Monitor` | | Open a serial monitor for the selected port. |
+| `NodeMCU: Select Port` | | Choose the serial port manually. |
+| `NodeMCU: Cancel Queued Commands` | | Cancel pending extension operations. |
 
 ## Configuration
 
-The plugin reads `nodemcu.ini` (format inspired by `platformio.ini`).
+Most users can leave `nodemcu.ini` alone after initialization. The extension
+updates the selected port, enabled modules, device UUIDs, and sync timestamp as
+needed.
+
+Example:
 
 ```ini
 [nodemcu]
 lua_version = 53
-port = /dev/ttyUSB0
-baud = 115200
+lua_number_integral = false
+lua_number_64bits = false
+port =
+baud = 460800
+upload_baud = 460800
+src = src
 flash_mode = dio
 flash_freq = 80m
-flash_size = 4MB
-
-[devices]
-uuids = aabbccddeeff
-
-[sync]
-last_timestamp = 2026-06-08T20:33:32.804Z
+flash_size = 4M
 
 [c_modules]
 adc = true
-wifi = true
+file = true
+gpio = true
+net = true
 node = true
-; coap = false
+tmr = true
+uart = true
+wifi = true
+; mqtt = false
+; sjson = false
+; u8g2 = false
+
+[devices]
+uuids =
 
 [lua_modules]
-bh1750 = lua/bh1750.lua
-file_lfs = lua/file_lfs.lua
+; bh1750 = lua/bh1750.lua
+; gossip = https://github.com/nodemcu/nodemcu-firmware/raw/master/lua_modules/gossip/gossip.lua
+
+[flash]
+; extra_files = spiffs.bin@0x100000
+
+[build]
+parallel = true
+verbose = false
 ```
 
-Leave `firmware_path` empty to use the extension-managed firmware downloaded
-from the `mbedtls-2.28.10-beta` archive. Set it only when deliberately using a
-custom local checkout.
+Important settings:
 
-The `[sync]` section tracks the last mirror-to-device operation (populated
-automatically). When `last_timestamp` is empty, saving a file triggers a full
-mirror (format, list remote files, upload/delete as needed). Once populated,
-saves only upload the single changed file (or remove the remote file on local
-deletion). Clear it to force a full re-sync on the next save.
+| Setting | Meaning |
+| --- | --- |
+| `nodemcu.src` | Local directory that is mirrored to the device. Defaults to `src`. |
+| `nodemcu.port` | Serial port such as `COM3` or `/dev/ttyUSB0`. Usually auto-detected. |
+| `nodemcu.baud` | Runtime serial baud rate. |
+| `nodemcu.upload_baud` | Upload baud rate. |
+| `nodemcu.flash_mode` | ESP8266 flash mode: `dio`, `qio`, `dout`, or `qout`. |
+| `nodemcu.flash_freq` | Flash frequency: `20m`, `26m`, `40m`, or `80m`. |
+| `nodemcu.flash_size` | Flash size such as `1M`, `4M`, or `detect`. |
+| `[c_modules]` | Firmware modules compiled into the image. |
+| `[lua_modules]` | Lua library modules synced to the device as compiled `.lc` files. |
+| `[devices] uuids` | Approved device IDs for the workspace. |
+| `[sync] last_timestamp` | Internal timestamp used for incremental sync. |
 
-VS Code settings (`nodemcu-vscode.*`) override / complement the ini:
+VS Code settings:
 
-| Setting | Default | Purpose |
+| Setting | Default | Meaning |
 | --- | --- | --- |
-| `src` | `"src"` | Directory to watch and auto-upload. |
-| `firmwarePath` | `"../nodemcu-firmware"` (legacy) | Override `firmware_path` from settings. Empty string disables the legacy default. |
-| `port` | `""` | Serial port (overrides `nodemcu.ini`). |
-| `pythonPath` | `"python"` | Python executable for `esptool` and `nodemcu-tool`. |
-| `cmakePath` | `"cmake"` | CMake executable. |
-| `autoInstallNodemcuTool` | `true` | `npm install nodemcu-tool` if missing. |
-| `outputVerbose` | `false` | Show verbose build/flash output. |
+| `nodemcu-vscode.src` | `src` | Overrides the watched upload directory. |
+| `nodemcu-vscode.port` | empty | Overrides the port in `nodemcu.ini`. |
+| `nodemcu-vscode.pythonPath` | `python` | Python executable for tools. |
+| `nodemcu-vscode.cmakePath` | `cmake` | CMake executable for firmware builds. |
+| `nodemcu-vscode.autoInstallNodemcuTool` | `true` | Install `nodemcu-tool` with pip when missing. |
+| `nodemcu-vscode.outputVerbose` | `false` | Show more build and flash output. |
 
----
+## Managed Firmware
 
-### Serial port auto-selection
+By default, the extension uses managed firmware in VS Code global storage. This
+keeps normal projects small and avoids requiring every user to clone
+`nodemcu-firmware`.
 
-If the configured port is available, the extension keeps it. If it is missing,
-or no port is configured, the extension writes a detected port to `nodemcu.ini`
-only when the choice is unambiguous: exactly one serial port, or exactly one
-NodeMCU-like port among multiple ports. The `nodemcu-vscode.port` setting still
-overrides `nodemcu.ini`; clear it to let auto-selection update the project file.
+Use a custom firmware checkout only when you need to patch firmware sources or
+build against a different tree. In that case, set `firmware_path` in
+`nodemcu.ini` to the checkout path.
 
-### Device Files live edit
+## Lua IntelliSense and Snippets
 
-The **Device Files** view lists files from the selected NodeMCU. Click a file to
-open an in-memory live-edit document; saving that editor uploads the content back
-to the same remote file. Use the context menu or the `Delete` key in the Device
-Files view to remove a file from the device.
+The extension can generate:
 
----
+```text
+.vscode/nodemcu-api.lua
+.luarc.json
+```
 
-## Commands
+These files let the Lua language server understand common NodeMCU globals. Run
+**NodeMCU: Regenerate Lua API Stubs** if they need to be recreated.
 
-| Command | Keybinding | Description |
-| --- | --- | --- |
-| `NodeMCU: Initialize Project` |  | Create a default `nodemcu.ini` + `init.lua`. |
-| `NodeMCU: Build Firmware` | `Ctrl+Shift+B` | Run CMake configure + build. |
-| `NodeMCU: Flash Firmware` |  | Run `esptool.py write_flash`. |
-| `NodeMCU: Build & Flash` | `Ctrl+Alt+B` | Build then flash. |
-| `NodeMCU: Upload File to Device` |  | Upload a `.lua` or `.lc` file via `nodemcu-tool`. |
-| `NodeMCU: Upload Changes to Device` |  | Upload only files in `src/` whose mtime is newer than the last upload. |
-| (Save file in `src/`) | `Ctrl+S` | Saves trigger automatic sync: full mirror on first save, transactional single-file upload on subsequent saves. File deletions in the workspace are also mirrored. |
-| `NodeMCU: Upload and Monitor` | `F5` | Build/flash if C modules are dirty, upload changed files, sync Lua modules, then open the serial monitor. |
-| `NodeMCU: Live Edit Device File` |  | Download a device file into an in-memory editor and upload it on save. |
-| `NodeMCU: Download File from Device` |  | Save a file from the device via `nodemcu-tool`. |
-| `NodeMCU: Delete File on Device` | `Delete` in Device Files | Remove a file from the device. |
-| `NodeMCU: Refresh Device Explorer` |  | Re-enumerate serial ports and on-device files. |
-| `NodeMCU: Sync Lua Modules to Device` |  | Upload all `[lua_modules]` entries, pre-compiling them. |
-| `NodeMCU: Toggle C Module` |  | Enable/disable a C module in the firmware (also available in the C Modules view). |
-| `NodeMCU: Add Lua Module from Library` |  | Add a module from `firmware/lua_modules/` to your project. |
-| `NodeMCU: Regenerate Lua API Stubs` |  | Generate `.vscode/nodemcu-api.lua` and `.luarc.json`. |
-| `NodeMCU: Open nodemcu.ini` |  | Reveal `nodemcu.ini` in the editor. |
-| `NodeMCU: Open Serial Monitor` |  | Open `python -m serial.tools.miniterm` for the configured port. |
-| `NodeMCU: Select Port` |  | Pick from detected serial ports and persist to `nodemcu.ini`. |
+Snippet prefixes:
 
----
+| Prefix | Snippet |
+| --- | --- |
+| `ninit` | Startup diagnostics. |
+| `nwifi` | WiFi station setup. |
+| `nmqtt` | MQTT client setup. |
+| `nhttp` | Minimal HTTP server. |
+| `ntmr` | Repeating timer. |
 
-## Architecture (1-minute tour)
+## Device Safety
 
-- `src/extension.ts` is the brain: `activate()`, command handlers, tree-view
-  providers (Device Explorer, Device Files, Lua Modules, C Modules), and the
-  project-tasks pane.
-- `src/build/buildManager.ts` is the only thing that runs `cmake` / builds
-  firmware; it diffs `app/include/user_modules.h` to decide whether to reconfigure.
-- `src/flash/flashManager.ts` runs `esptool.py write_flash` (with a fallback to
-  `python -m esptool`) at the standard `0x00000` / `0x10000` offsets.
-- `src/upload/nodemcuTool.ts` wraps `nodemcu-tool` for upload / download / remove /
-  live-edit content transfer / `fsinfo` (with a JSON parser and a text fallback
-  for older stubs).
-- `src/firmware/managedFirmware.ts` is the bootstrap that downloads
-  `caiohamamura/nodemcu-firmware` tag `mbedtls-2.28.10-beta`, extracts it,
-  hydrates 3 submodules, applies two compatibility patches, and writes a marker
-  file so subsequent runs are no-ops.
-- `src/luaApi/apiFiles.ts` generates `---@meta` stubs for `sumneko.lua`.
-- `src/luaPicker/{moduleList,luaModuleResolver}.ts` powers the Lua/C module
-  pickers, Lua-module autocomplete, and local-vs-remote module resolution.
-- `src/device/liveEditFs.ts` provides the in-memory `nodemcu-live:` filesystem
-  used by Device Files live edit.
+The first sync for a new device/workspace can format the device filesystem so
+the local `src/` directory becomes the source of truth. When the workspace has
+known device UUIDs and a different device is attached, VS Code asks before
+adding that device and syncing.
 
-### Output channel
+Keep one workspace per physical project when possible. That makes the device
+UUID guard useful and reduces accidental cross-project uploads.
 
-Every user action opens the **NodeMCU** output channel (View → Output → NodeMCU)
-and logs a timestamped message before starting. Background operations triggered
-by saves, file deletions, and checkbox toggles also log their intent. This
-replaces silent background work — you always see what the extension is doing.
+## Requirements
 
-For a deeper module-by-module map (line numbers, exports, responsibilities), see
-[AGENTS.md §4](AGENTS.md#4-source-module-reference).
+- VS Code 1.85 or newer.
+- Node.js 20 or newer for extension development.
+- A NodeMCU / ESP8266 board.
+- A USB data cable that supports data, not just charging.
+- Python available as `python`, unless configured otherwise.
+- CMake and a supported generator such as Ninja or Make for firmware builds.
 
----
+The extension can install `nodemcu-tool` automatically when needed.
 
-## Development
+## Troubleshooting
 
-### Setup
+### The first initialization is slow
+
+This is expected. The first run may download managed tools, download firmware,
+build firmware, flash the board, format the device filesystem, and sync `src/`.
+
+### No serial port is detected
+
+Check the USB cable, driver, and board power. Then run:
+
+```text
+NodeMCU: Select Port
+```
+
+On Windows, common USB serial adapters may require CP210x or CH340 drivers.
+
+### Uploads do not appear on the device
+
+Confirm the file is inside the configured `src/` directory. Then open the
+**NodeMCU** output channel and check the latest upload log.
+
+### C module changes are not visible on the board
+
+C modules are compiled into firmware. Run:
+
+```text
+NodeMCU: Build & Flash
+```
+
+Then upload the Lua files again.
+
+### Lua module `require()` fails
+
+Make sure the module is checked in the **Lua Modules** sidebar or listed in
+`[lua_modules]`. Then run **NodeMCU: Sync Lua Modules to Device** or press `F5`.
+
+### The wrong project is syncing to the board
+
+Open `nodemcu.ini` and check `[devices] uuids`. If the attached device belongs
+to another workspace, open that workspace before syncing.
+
+## Extension Development
+
+Install dependencies and build:
 
 ```bash
 npm install
-npm run build       # produce dist/extension.js
-npm run watch       # rebuild on change
+npm run typecheck
+npm run build
 ```
 
-Press **F5** in VS Code to launch an Extension Development Host for manual
-testing. Any code change requires a rebuild + window reload (or `npm run watch`
-+ reload).
-
-### Build & package
+Run tests:
 
 ```bash
-npm run typecheck    # tsc --noEmit (strict: noUnusedLocals, noUnusedParameters)
-npm run build        # esbuild bundles src/extension.ts → dist/extension.js
-npm run package      # npx @vscode/vsce package → .vsix
+npm test
 ```
 
-> **Do not edit `.vscodeignore` to ignore `node_modules/` or `dist/`.** `vsce`
-> packages them into the VSIX. If they are ignored, the VSIX silently lacks
-> the native `serialport` binding and the extension crashes on activation in
-> a normal VS Code install.
-
-### Test
+Package a VSIX:
 
 ```bash
-npm run test:unit          # vitest run tests/unit         (165 tests, ~5s)
-npm run test:integration   # vitest run tests/integration  (26 tests, ~24s)
-npm run test:e2e           # real hardware / real IDE / CDP-driven
-npm test                   # runs all three
+npm run package
 ```
 
-`typecheck` and `build` are independent (esbuild does not typecheck). Run both
-before submitting. The `lint` script is just `tsc --noEmit`; lint == typecheck.
-
-Test-only env vars and the CDP-driven e2e harness are documented in
-[AGENTS.md §7](AGENTS.md#7-tests).
-
-### Project layout
-
-```
-src/                  production code
-  build/              build pipeline (cmake / esptool / user_modules.h)
-  config/             nodemcu.ini parser + watcher
-  firmware/           managed-firmware download/extract/patch
-  flash/              esptool invocation + serial port discovery
-  luaApi/             sumneko.lua stub generator
-  luaPicker/          module list + resolver
-  status/             StatusEmitter
-  upload/             nodemcu-tool wrapper
-  util/               paths + shell helpers
-tests/                unit / integration / e2e suites
-resources/            icons, snippets, ini template
-scripts/              standalone hardware probe
-.claude/SKILLS/       custom Agent Skills (see .claude/SKILLS/README.md)
-```
-
----
+The extension host loads `dist/extension.js`, so rebuild after source changes.
+See `AGENTS.md` for internal architecture, testing notes, and handoff context.
 
 ## License
 
-MIT.
+MIT
