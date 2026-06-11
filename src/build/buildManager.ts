@@ -47,6 +47,19 @@ export class BuildManager {
     const buildDirMissing = !fs.existsSync(path.join(buildDir, "CMakeCache.txt"));
     const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0;
     if (needsReconfigure) {
+      // The firmware is a CMake superbuild: the real compile runs inside an
+      // ExternalProject whose build step is gated by stamp files that the
+      // outer ninja does not invalidate when only user_modules.h changes.
+      // Without removing them the outer build reports "no work to do" and a
+      // subsequent flash writes stale binaries. The inner build is properly
+      // dependency-tracked, so this stays incremental.
+      for (const stamp of [
+        path.join(buildDir, "firmware-prefix", "src", "firmware-stamp", "firmware-build"),
+        path.join(buildDir, "firmware-prefix", "src", "firmware-stamp", "firmware-done"),
+        path.join(buildDir, "CMakeFiles", "firmware-complete"),
+      ]) {
+        try { fs.rmSync(stamp, { force: true }); } catch { }
+      }
       const modulesSrcDir = path.join(ctx.firmwarePath, "app", "modules");
       const appCMakeLists = path.join(ctx.firmwarePath, "app", "CMakeLists.txt");
       const parseModulesCmake = path.join(ctx.firmwarePath, "cmake", "parse_user_modules_h.cmake");

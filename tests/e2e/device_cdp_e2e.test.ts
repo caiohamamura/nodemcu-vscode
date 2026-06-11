@@ -5,7 +5,9 @@
  * .claude/SKILLS/devtools-automation/notes/nodemcu-e2e-flow.md).
  *
  * Scenarios:
- *   1. Initialize the project from the side-panel welcome button.
+ *   1. Initialize the project from the side-panel welcome button and wait for
+ *      the auto-started first sync (claim/format/mirror, possibly build+flash)
+ *      to finish, so later scenarios run against a quiescent extension.
  *   2. Select (and clear) a C module and a Lua module — assert ini + checkbox.
  *   3. Edit src/init.lua, save, and confirm the new file uploads AND runs
  *      (verified by reading the device's serial output directly).
@@ -119,19 +121,31 @@ class CDPClient {
   }
 }
 
-/** Read the device's serial output after a reset and return matching lines. */
+/**
+ * Read the device's serial output after a reset and return matching lines.
+ * The extension's shared serial session normally owns the port, so callers must
+ * release it first (see withSerialReleased); opening still retries briefly
+ * because the release lands asynchronously.
+ */
 async function readDeviceSerial(marker: string, timeoutMs = 12_000): Promise<{ found: boolean; lines: string[] }> {
   const lines: string[] = [];
   let buffer = "";
   let found = false;
   let sp: SerialPort | null = null;
-  try {
-    sp = await new Promise<SerialPort>((resolve, reject) => {
-      const p = new SerialPort({ path: PORT, baudRate: BAUD_RATE }, (err) => (err ? reject(err) : resolve(p)));
-    });
-  } catch (e) {
-    console.log(`[serial] open failed: ${(e as Error).message}`);
-    return { found: false, lines };
+  const openDeadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      sp = await new Promise<SerialPort>((resolve, reject) => {
+        const p = new SerialPort({ path: PORT, baudRate: BAUD_RATE }, (err) => (err ? reject(err) : resolve(p)));
+      });
+      break;
+    } catch (e) {
+      if (Date.now() >= openDeadline) {
+        console.log(`[serial] open failed: ${(e as Error).message}`);
+        return { found: false, lines };
+      }
+      await sleep(500);
+    }
   }
   const onData = (chunk: Buffer) => {
     buffer += chunk.toString("latin1");
@@ -411,18 +425,39 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     `);
   }
 
-  /** Clear lingering notification toasts so the next upload's toasts are unambiguous. */
-  async function clearToasts(): Promise<void> {
+  /** Run a command-palette command by label (F1 → type → Enter). */
+  async function runPaletteCommand(label: string): Promise<void> {
     await pressKey(0x1b, "Escape", "Escape");
     await sleep(150);
     await pressKey(0x70, "F1", "F1");
     await sleep(600);
     await client.evaluate(
-      `(() => { const i = document.querySelector('.quick-input-box input'); i.focus(); i.value = '>Clear All Notifications'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+      `(() => { const i = document.querySelector('.quick-input-box input'); i.focus(); i.value = ${JSON.stringify(`>${label}`)}; i.dispatchEvent(new Event('input', { bubbles: true })); })()`,
     );
     await sleep(700);
     await pressKey(0x0d, "Enter", "Enter");
     await sleep(400);
+  }
+
+  /** Clear lingering notification toasts so the next upload's toasts are unambiguous. */
+  async function clearToasts(): Promise<void> {
+    await runPaletteCommand("Clear All Notifications");
+  }
+
+  /**
+   * The extension's shared serial session owns the port, so a direct SerialPort
+   * read gets "Access denied". Release the port for the duration of fn, then
+   * hand ownership back so later uploads keep working. Proven interactively:
+   * Release Serial Port frees the port within ~3s, Reconnect re-claims it.
+   */
+  async function withSerialReleased<T>(fn: () => Promise<T>): Promise<T> {
+    await runPaletteCommand("NodeMCU: Release Serial Port");
+    try {
+      return await fn();
+    } finally {
+      await runPaletteCommand("NodeMCU: Reconnect Serial Port");
+      await sleep(1500);
+    }
   }
 
   /**
@@ -458,7 +493,7 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
 
   // ---- Scenarios ---------------------------------------------------------
 
-  it("1. initializes the project from the side-panel welcome button", async () => {
+  it("1. initializes the project and completes the initial device sync", async () => {
     await focusNodeMcuSidebar();
     let clicked = false;
     for (let i = 0; i < 10 && !clicked; i++) {
@@ -475,7 +510,24 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     const portPattern = new RegExp(`port\\s*=\\s*${escapedPort}`, "i");
     for (let i = 0; i < 15 && !portPattern.test(readIni()); i++) await sleep(1000);
     expect(readIni()).toMatch(portPattern);
-  }, 60_000);
+
+    // Initialize kicks off the first full sync immediately (claim + format +
+    // mirror, possibly preceded by a firmware build + flash when the attached
+    // device's firmware doesn't match the default module set). Later scenarios
+    // assume a quiescent extension — toasts they wait on must be their own and
+    // the serial port must be releasable — so block here until that initial
+    // sync writes [sync] last_timestamp. Whitespace must be same-line ([ \t]):
+    // \s would cross the newline of an empty `last_timestamp=` and match the
+    // next section's text.
+    const timestampPattern = /^last_timestamp[ \t]*=[ \t]*\S/im;
+    const deadline = Date.now() + 720_000;
+    while (Date.now() < deadline && !timestampPattern.test(readIni())) {
+      await clickProceedIfPresent();
+      await sleep(2000);
+    }
+    expect(timestampPattern.test(readIni()), `initial sync wrote last_timestamp. ini: ${readIni()}`).toBe(true);
+    await clearToasts();
+  }, 900_000);
 
   it("2. selects and clears a C module and a Lua module (ini + checkbox round-trip)", async () => {
     await focusNodeMcuSidebar();
@@ -501,11 +553,12 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
   it("3. edits init.lua, uploads on save, and the new file runs on the device", async () => {
     const marker = `HELLO_E2E_${RUN_ID.replace(/[^a-zA-Z0-9]/g, "")}`;
     await editAndSaveInitLua(`print("${marker}")`);
-    // First sync of a fresh workspace: claims the device (Proceed) and formats (~36s).
+    // Scenario 1 already completed the initial claim/format sync, so this save
+    // takes the fast single-file upload path.
     const result = await waitForUpload(120_000);
     expect(result).toMatch(/synced \d+ operation|uploaded/i);
 
-    const { found, lines } = await readDeviceSerial(marker, 15_000);
+    const { found, lines } = await withSerialReleased(() => readDeviceSerial(marker, 15_000));
     expect(found, `device serial should print ${marker}. Lines: ${lines.slice(-8).join(" / ")}`).toBe(true);
   }, 180_000);
 
@@ -522,7 +575,7 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     expect(result).toMatch(/flashing/i);
     expect(result).toMatch(/uploaded|synced/i);
 
-    const { modules, lines } = await readDeviceModules(30_000);
+    const { modules, lines } = await withSerialReleased(() => readDeviceModules(30_000));
     expect(modules, `boot banner modules should include coap. Lines: ${lines.slice(-12).join(" / ")}`).toContain("coap");
   }, 960_000);
 
@@ -536,7 +589,7 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     const result = await waitForUpload(90_000);
     expect(result).toMatch(/uploaded|synced/i);
 
-    const { found, lines } = await readDeviceSerial("FIFO_OK", 15_000);
+    const { found, lines } = await withSerialReleased(() => readDeviceSerial("FIFO_OK", 15_000));
     expect(found, "FIFO_OK printed").toBe(true);
     const fifoLine = lines.find((l) => l.includes("FIFO_OK")) || "";
     expect(fifoLine, `fifo should load (true table). Got: ${fifoLine}`).toMatch(/FIFO_OK\s+true\s+table/i);
@@ -554,7 +607,7 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     const result = await waitForUpload(90_000);
     expect(result).toMatch(/uploaded|synced/i);
 
-    const { found, lines } = await readDeviceSerial("FIFO_GONE", 15_000);
+    const { found, lines } = await withSerialReleased(() => readDeviceSerial("FIFO_GONE", 15_000));
     expect(found, "FIFO_GONE printed").toBe(true);
     const line = lines.find((l) => l.includes("FIFO_GONE")) || "";
     expect(line, `require('fifo') should now fail. Got: ${line}`).toMatch(/FIFO_GONE\s+false/i);

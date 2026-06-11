@@ -41,6 +41,11 @@ interactively before any Vitest e2e was written (AGENTS.md §9.8 rule).
   Ctrl+A (vk 0x41, mods 2) → `Input.insertText {text}` → Ctrl+S (vk 0x53, mods 2).
   **Ctrl+S on a non-dirty doc is a no-op** (no `onDidSaveTextDocument`); always
   change the text first.
+- **Enter into Monaco needs `text: "\r"`** on the `keyDown` event
+  (`Input.dispatchKeyEvent { type: "keyDown", windowsVirtualKeyCode: 13,
+  key: "Enter", text: "\r" }`). A bare keyDown/keyUp pair works for quick-pick
+  widgets but inserts nothing in the editor — typed text then lands on the
+  current line (re-proven 2026-06-11 while recording README GIFs).
 
 ## The flows (command IDs + observed behavior)
 
@@ -127,3 +132,12 @@ hardware assertions that need independent byte-level proof should explicitly run
 - **Verify on the device, not the UI.** Each scenario asserts by reopening COM7
   with `serialport`, sending `node.restart()`, and matching the printed marker
   line — the only proof the file/module actually reached and ran on hardware.
+- **Direct serial reads MUST be wrapped in release/reconnect — no exceptions**
+  (re-proven 2026-06-11). Scenarios 4–6 failed with `Opening COM7: Access
+  denied` because their `readDeviceSerial` calls were bare; scenario 3 passed
+  only by luck (the shared session had not yet claimed the port that early in
+  the session). Verified over CDP: **NodeMCU: Release Serial Port** frees COM7
+  within ~3 s; **NodeMCU: Reconnect Serial Port** re-claims it within ~4 s.
+  The test now uses `withSerialReleased(fn)` around every direct read, and
+  `readDeviceSerial` retries opening for up to 10 s because the release lands
+  asynchronously.

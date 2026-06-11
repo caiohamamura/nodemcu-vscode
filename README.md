@@ -1,38 +1,62 @@
-# NodeMCU Lua for VS Code
+<h1>NodeMCU Lua for VS Code</h1>
 
 <p align="center">
   <img src="resources/icons/nodemcu.png" alt="NodeMCU Lua logo" width="128">
 </p>
 
-A VS Code extension for end-to-end Lua development on NodeMCU / ESP8266 boards.
-It initializes projects, manages a known-good NodeMCU firmware checkout, builds
-and flashes firmware, syncs Lua files to the device, keeps a live Serial Console, and
-adds IntelliSense stubs for NodeMCU globals.
-
-The extension is designed so you do not need to clone `nodemcu-firmware`
-manually. On first use it downloads and patches the managed firmware in VS Code
-extension storage. You only need a custom firmware checkout if you deliberately
-configure one.
-
-## UI Preview
-
-The marketplace logo is packaged from:
-
-<p>
-  <img src="resources/icons/nodemcu.png" alt="NodeMCU Lua logo" width="96">
+<p align="center">
+  <img src="docs/images/quick-start.gif" alt="Initialize a project, flash the board, save a file, and watch serial output">
 </p>
 
-The Activity Bar icon is packaged from:
+**Build • Flash • Sync • Monitor** — everything you need for Lua development on
+NodeMCU / ESP8266 boards, in one VS Code extension.
 
-<p>
-  <img src="resources/icons/logo.png" alt="NodeMCU Activity Bar icon" width="48">
-</p>
+First-time setup is fully automatic. The extension downloads the ESP8266
+toolchain, the NodeMCU firmware source, and the required Python tools, builds
+the firmware, flashes the board, and creates your project. After that,
+development is as simple as editing files in `src/` and pressing Save.
 
-In VS Code, open the NodeMCU Activity Bar item to access Device Explorer, Lua
-Modules, and C Modules. When a folder is not initialized yet, the NodeMCU view
-shows an **Initialize NodeMCU Project** action.
+## Features
+
+- ✅ **One-click project initialization** — a single **Initialize NodeMCU Project** action
+- ✅ **Automatic firmware build and flash** — toolchain and firmware are downloaded and managed for you.
+- ✅ **Auto-upload on save** — save a file in `src/` and it runs on the board
+- ✅ **Live Serial Console** — always in view in the bottom panel
+- ✅ **NodeMCU Lua IntelliSense** — completion and hover docs for the device API
+- ✅ **Lua and C module management** — pick modules with checkboxes in the sidebar and automatically update the firmware and flash it to the board.
+- ✅ **Serial port explorer** — seamless device switching, it warns if try to sync a different device from the one initially set.
+- ✅ **No ESPlorer, no `nodemcu-tool` setup, no firmware checkout required**
+
+Getting started with NodeMCU Lua used to mean assembling a toolbox by hand:
+clone `nodemcu-firmware`, set up a cross-compiler, edit C headers to select
+modules, flash with `esptool`, then switch to ESPlorer or `nodemcu-tool` to
+upload Lua files and watch serial output. This extension collapses all of that
+into one click.
+
+## How it works
+
+```text
+                 VS Code
+                    │
+                    ▼
+           NodeMCU Extension
+                    │
+     ┌──────────────┼──────────────┐
+     ▼              ▼              ▼
+Build Firmware  Upload Lua    Serial Console
+Flash Device    on Save       (live monitor)
+     └──────────────┴──────────────┘
+                    │
+                    ▼
+            ESP8266 / NodeMCU
+```
+
+The firmware source, cross-compiler, and flashing tools live in VS Code
+extension storage — your project folder stays small (`nodemcu.ini` + `src/`).
 
 ## Quick Start
+
+![Initializing a NodeMCU project](docs/images/initialize.gif)
 
 1. Install the extension in VS Code.
 2. Open the folder that will contain your NodeMCU project.
@@ -43,13 +67,13 @@ shows an **Initialize NodeMCU Project** action.
 7. Edit Lua files in `src/` and save them.
 8. Press `F5` to upload pending changes; the Serial Console stays connected.
 
-The first setup can take a while because the extension downloads tools and
-firmware, builds the selected firmware image, flashes the board, and performs
-the first device filesystem sync.
+That's the whole setup — the only host prerequisites are Python 3 and CMake
+(see [Requirements](#requirements)). The first run takes a while because the
+extension downloads tools and firmware, builds the firmware image, flashes the
+board, and performs the first device filesystem sync. After that, saving a file
+in `src/` uploads only that file.
 
-After the first successful setup, normal development is faster. Saving a file in
-`src/` uploads only that changed file, and deleting a file from `src/` removes
-the matching file from the device.
+![VS Code with the NodeMCU sidebar and Serial Console](docs/images/overview.png)
 
 ## What Gets Created
 
@@ -65,18 +89,21 @@ your-project/
 Put your Lua application files in `src/`. The extension watches this directory
 and syncs it to the device.
 
-## First Run vs Later Runs
-
-| Action | First run | Later runs |
-| --- | --- | --- |
-| Project setup | Creates `nodemcu.ini` and `src/init.lua` | Reuses existing project files |
-| Firmware source | Downloads managed firmware | Reuses cached firmware |
-| Firmware build | Builds selected C modules | Rebuilds only when C modules change |
-| Flashing | Flashes the ESP8266 | Needed only after firmware changes |
-| File sync | Formats and mirrors `src/` to the device | Uploads changed files and mirrors deletions |
-| Serial Console | Opens and connects automatically | Stays open while commands run |
-
 ## Core Workflow
+
+```text
+Initialize
+    ↓
+Write Lua in src/
+    ↓
+Save
+    ↓
+Auto Upload
+    ↓
+See output in Serial Console
+```
+
+![Save a file and see it run on the device](docs/images/auto-upload.gif)
 
 1. Edit a Lua file in `src/`.
 2. Save the file.
@@ -94,9 +121,22 @@ Use **NodeMCU: Release Serial Port** or **NodeMCU: Disconnect Serial Session** i
 you want another tool to use the port. **NodeMCU: Open Serial Console** shows the
 console and reconnects it.
 
+## First Run vs Later Runs
+
+| Action | First run | Later runs |
+| --- | --- | --- |
+| Project setup | Creates `nodemcu.ini` and `src/init.lua` | Reuses existing project files |
+| Firmware source | Downloads managed firmware | Reuses cached firmware |
+| Firmware build | Builds selected C modules | Rebuilds only when C modules change |
+| Flashing | Flashes the ESP8266 | Needed only after firmware changes |
+| File sync | Formats and mirrors `src/` to the device | Uploads changed files and mirrors deletions |
+| Serial Console | Opens and connects automatically | Stays open while commands run |
+
 ## Sidebar Views
 
 ### Device Explorer
+
+![Device Explorer](docs/images/device-explorer.png)
 
 Shows detected serial ports. Click a port to select it. When detection is
 unambiguous, the extension can select the port automatically and write it to
@@ -108,6 +148,8 @@ serial port is present or exactly one NodeMCU-like port is detected.
 
 ### Lua Modules
 
+![Lua Modules](docs/images/lua-modules.png)
+
 Lists Lua helper modules from the managed firmware library. Checking a module
 adds it to `[lua_modules]` in `nodemcu.ini`; unchecking it removes the module
 from the device on the next sync.
@@ -118,6 +160,8 @@ completion inserts `name = require("name")`, enables the module in
 
 ### C Modules
 
+![C Modules](docs/images/c-modules.png)
+
 Lists firmware C modules from `app/modules` plus supported optional/library
 modules. Checking a module enables it in `[c_modules]`. Changing C modules can
 require a firmware rebuild and flash because C modules are compiled into the
@@ -125,9 +169,18 @@ firmware image.
 
 The `file` module is mandatory for file upload support and cannot be disabled.
 
+## Building and Flashing Firmware
+
+![Build & Flash](docs/images/build-flash.gif)
+
+Press `Ctrl+Alt+B` (**NodeMCU: Build & Flash**) after changing C modules. The
+extension builds the firmware image with the managed toolchain, flashes it, and
+reconnects the Serial Console as the board reboots. Rebuilds happen only when
+the selected C modules change.
+
 ## Commands
 
-Open the Command Palette and run commands under the **NodeMCU** category.
+Open the Command Palette and run commands under the **NodeMCU** category. You usually won't need to use it, except for **NodeMCU: Initialize Project**.
 
 | Command | Keybinding | Use |
 | --- | --- | --- |
@@ -241,6 +294,13 @@ build against a different tree. In that case, set `firmware_path` in
 
 ## Lua IntelliSense and Snippets
 
+![Accepting a Lua module completion inserts the require line and enables the module](docs/images/intellisense.gif)
+
+Typing a firmware Lua module name (such as `fifo`) offers a **NodeMCU Lua
+module** completion. Accepting it inserts `fifo = require("fifo")`, enables the
+module in `nodemcu.ini`, checks it in the sidebar, and syncs it to the device.
+Hover documentation comes from the Lua language server.
+
 The extension can generate:
 
 ```text
@@ -274,13 +334,13 @@ UUID guard useful and reduces accidental cross-project uploads.
 ## Requirements
 
 - VS Code 1.85 or newer.
-- Node.js 20 or newer for extension development.
 - A NodeMCU / ESP8266 board.
 - A USB data cable that supports data, not just charging.
-- Python available as `python`, unless configured otherwise.
+- Python 3 available as `python`, unless configured otherwise.
 - CMake and a supported generator such as Ninja or Make for firmware builds.
 
-The extension can install `nodemcu-tool` automatically when needed.
+You do **not** need a `nodemcu-firmware` checkout, an ESP8266 cross-compiler,
+or standalone esptool/ESPlorer installs — the extension manages those itself.
 
 ## Troubleshooting
 
@@ -297,6 +357,8 @@ Check the USB cable, driver, and board power. Then run:
 NodeMCU: Select Port
 ```
 
+![NodeMCU: Select Port](docs/images/select-port.png)
+
 On Windows, common USB serial adapters may require CP210x or CH340 drivers.
 
 ### Uploads do not appear on the device
@@ -304,6 +366,8 @@ On Windows, common USB serial adapters may require CP210x or CH340 drivers.
 Confirm the file is inside the configured `src/` directory. Then check the
 bottom-panel **NodeMCU Serial** console for device output. The **NodeMCU** output
 channel still stores extension logs, but it does not open automatically.
+
+![What a healthy Serial Console looks like](docs/images/serial-success.png)
 
 ### C module changes are not visible on the board
 

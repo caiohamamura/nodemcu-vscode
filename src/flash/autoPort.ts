@@ -16,7 +16,9 @@ function portMatchesConfigured(port: SerialPort, configured: string): boolean {
 export function isNodeMcuLikePort(port: SerialPort): boolean {
   const haystack = [
     port.path,
+    port.friendlyName,
     port.manufacturer,
+    port.pnpId,
     port.productId,
     port.vendorId,
   ].filter(Boolean).join(" ").toLowerCase();

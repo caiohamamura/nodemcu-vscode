@@ -23,7 +23,7 @@ import { BuildManager } from "./build/buildManager";
 import { ToolchainLocator } from "./build/toolchain";
 import { FlashManager } from "./flash/flashManager";
 import { chooseAutoPort } from "./flash/autoPort";
-import { SerialDiscovery, type SerialPort } from "./flash/serialDiscovery";
+import { SerialDiscovery, serialPortDisplayName, type SerialPort } from "./flash/serialDiscovery";
 import { NodemcuTool, type FileEntry, type NodemcuToolOptions } from "./upload/nodemcuTool";
 import { readDeviceIdentity, type DeviceIdentity } from "./device/deviceIdentity";
 import { readDeviceFirmwareInfo } from "./device/deviceFirmwareInfo";
@@ -499,22 +499,23 @@ async function updatePortStatusBar(cfg: NodemcuConfig | null) {
       return;
     }
     const port = ports.find((p) => p.path === selectedPort);
-    const name = port?.manufacturer ? ` (${port.manufacturer})` : "";
+    const name = port ? serialPortDisplayName(port) : "";
+    const suffix = name ? ` (${name})` : "";
     const session = serialSessionManager?.getCurrentSession();
     if (session && session.port === selectedPort) {
       const state = session.getState();
       if (state === "busy" || state === "booting" || state === "opening") {
-        portStatusBarItem.text = `$(sync~spin) ${selectedPort}${name}`;
+        portStatusBarItem.text = `$(sync~spin) ${selectedPort}${suffix}`;
       } else if (state === "released-for-flash") {
-        portStatusBarItem.text = `$(debug-disconnect) ${selectedPort}${name}`;
+        portStatusBarItem.text = `$(debug-disconnect) ${selectedPort}${suffix}`;
       } else {
-        portStatusBarItem.text = `$(plug) ${selectedPort}${name}`;
+        portStatusBarItem.text = `$(plug) ${selectedPort}${suffix}`;
       }
       portStatusBarItem.tooltip = `Serial session ${state}. Click to select a serial port`;
       portStatusBarItem.show();
       return;
     }
-    portStatusBarItem.text = `$(plug) ${selectedPort}${name}`;
+    portStatusBarItem.text = `$(plug) ${selectedPort}${suffix}`;
   } catch {
     const fallback = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("port") || cfg?.nodemcu.port || "No Port";
     portStatusBarItem.text = `$(plug) ${fallback}`;
@@ -570,9 +571,13 @@ async function ensurePort(cfg: NodemcuConfig): Promise<string | null> {
   if (selection) {
     if (selection.shouldSave) {
       cfg.nodemcu.port = selection.port;
-      cachedConfig = cfg;
+      // Write through the live config, not the caller's snapshot, so a
+      // concurrent edit (e.g. a module toggle) isn't clobbered.
+      const current = getConfigOrNull() ?? cfg;
+      current.nodemcu.port = selection.port;
+      cachedConfig = current;
       const iniPath = existingIniPath();
-      if (iniPath) saveConfig(iniPath, cfg);
+      if (iniPath) saveConfig(iniPath, current);
     }
     updatePortStatusBar(cfg);
     deviceExplorerProvider?.refresh();
@@ -622,7 +627,7 @@ async function doSelectPort(item?: { serialPort?: SerialPort } | SerialPort): Pr
   
   const items = ports.map((p) => ({
     label: p.path,
-    description: p.manufacturer ? `(${p.manufacturer})` : "",
+    description: serialPortDisplayName(p),
   }));
   
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Select serial port" });
@@ -671,6 +676,19 @@ async function doBuild(signal?: AbortSignal): Promise<void> {
 }
 
 async function doFlash(signal?: AbortSignal): Promise<void> {
+  await flashFirmware(signal, { postFlashSync: true });
+}
+
+/**
+ * Flash the built firmware. `postFlashSync: true` (the standalone Flash /
+ * Build & Flash commands) follows a first-time device claim with a full
+ * mirror. When the flash is triggered from inside mirrorSrcToDevice
+ * (postFlashSync: false), that nested mirror must be skipped — the outer
+ * mirror formats and syncs once itself; running both formats the device twice
+ * and emits a misleading early "synced" toast while the outer pass is still
+ * running.
+ */
+async function flashFirmware(signal: AbortSignal | undefined, opts: { postFlashSync: boolean }): Promise<void> {
   const cfg = getConfigOrNull();
   if (!cfg) {
     vscode.window.showErrorMessage("No nodemcu.ini found. Initialize project first.");
@@ -704,7 +722,7 @@ async function doFlash(signal?: AbortSignal): Promise<void> {
     if (serial) {
       await serial.client.reset().catch(() => {});
     }
-    if (identity.isNew) {
+    if (opts.postFlashSync && identity.isNew) {
       await mirrorSrcToDevice({ changedOnly: false, forceFormat: true, signal });
     }
   } else {
@@ -716,6 +734,14 @@ async function doFlash(signal?: AbortSignal): Promise<void> {
 async function doBuildAndFlash(signal?: AbortSignal): Promise<void> {
   await doBuild(signal);
   if (statusEmitter.getState() === "success" && !signal?.aborted) await doFlash(signal);
+}
+
+/** Build + flash for use inside a mirror: the outer mirror owns format/sync. */
+async function buildAndFlashForSync(signal?: AbortSignal): Promise<void> {
+  await doBuild(signal);
+  if (statusEmitter.getState() === "success" && !signal?.aborted) {
+    await flashFirmware(signal, { postFlashSync: false });
+  }
 }
 
 async function doInitProject(): Promise<void> {
@@ -919,7 +945,12 @@ async function ensureKnownDevice(cfg: NodemcuConfig, port: string, signal?: Abor
 
   const iniPath = existingIniPath();
   if (iniPath) {
-    const next = addDeviceUuid(cfg, result.identity.uuid);
+    // Re-read the live config at write time: the identity read takes seconds,
+    // and saving the caller's snapshot would clobber any module toggles or
+    // other edits made meanwhile (same class of bug as the sync-timestamp
+    // clobber fixed on 2026-06-08).
+    const current = getConfigOrNull() ?? cfg;
+    const next = addDeviceUuid(current, result.identity.uuid);
     cachedConfig = next;
     saveConfig(iniPath, next);
     refreshAll();
@@ -947,8 +978,9 @@ function isUriUnderSrc(uri: vscode.Uri, cfg: NodemcuConfig): boolean {
  * logging exactly what is going on (issue: the first sync used to silently show
  * only "formatting"/"sync"). Best-effort reads the attached device's boot banner
  * so the user can see which modules the physical device already provides.
- * Returns true if it is OK to continue the sync (no build needed, or build+flash
- * succeeded).
+ * Returns `ok: true` if it is OK to continue the sync (no build needed, or
+ * build+flash succeeded) and `flashed: true` when a flash actually happened so
+ * the caller can decide to format the fresh filesystem.
  */
 async function ensureFirmwareForSelectedModules(
   fw: string,
@@ -956,11 +988,17 @@ async function ensureFirmwareForSelectedModules(
   port: string,
   signal?: AbortSignal,
   isFreshWorkspace = false,
-): Promise<boolean> {
+): Promise<{ ok: boolean; flashed: boolean }> {
   const selected = Object.entries(cfg.c_modules)
     .filter(([, v]) => v)
     .map(([k]) => k)
     .sort();
+
+  const buildFlashAndReport = async (): Promise<{ ok: boolean; flashed: boolean }> => {
+    await buildAndFlashForSync(signal);
+    const ok = statusEmitter.getState() === "success";
+    return { ok, flashed: ok };
+  };
 
   const info = await serialSessionManager.withPortReleased(
     port,
@@ -972,8 +1010,7 @@ async function ensureFirmwareForSelectedModules(
     );
     if (isFreshWorkspace && !info.version) {
       outputChannel.appendLine("Fresh workspace: device banner did not identify NodeMCU firmware — building and flashing firmware...");
-      await doBuildAndFlash(signal);
-      return statusEmitter.getState() === "success";
+      return await buildFlashAndReport();
     }
     const deviceModules = new Set(info.modules.map((m) => m.toLowerCase()));
     const missing = selected.filter((m) => !deviceModules.has(m.toLowerCase()));
@@ -982,15 +1019,13 @@ async function ensureFirmwareForSelectedModules(
     } else {
       outputChannel.appendLine(`Selected C module(s) not yet on the device firmware: ${missing.join(", ")}.`);
       outputChannel.appendLine("Device firmware does not match selected C modules — rebuilding and flashing before sync...");
-      await doBuildAndFlash(signal);
-      return statusEmitter.getState() === "success";
+      return await buildFlashAndReport();
     }
   } else {
     outputChannel.appendLine("Could not read the device firmware banner (port busy or not running NodeMCU).");
     if (isFreshWorkspace) {
       outputChannel.appendLine("Fresh workspace: no NodeMCU banner — building and flashing firmware...");
-      await doBuildAndFlash(signal);
-      return statusEmitter.getState() === "success";
+      return await buildFlashAndReport();
     }
     outputChannel.appendLine("Continuing without banner check.");
   }
@@ -998,19 +1033,23 @@ async function ensureFirmwareForSelectedModules(
   const headerPath = userModulesHeader(fw);
   if (!isCModulesConfigChanged(headerPath, cfg)) {
     outputChannel.appendLine("Selected C modules already match the built firmware — skipping build & flash; syncing Lua only.");
-    return true;
+    return { ok: true, flashed: false };
   }
   outputChannel.appendLine("Selected C modules differ from the built firmware — rebuilding and flashing before sync...");
-  await doBuildAndFlash(signal);
-  return statusEmitter.getState() === "success";
+  return await buildFlashAndReport();
 }
 
 async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boolean; signal?: AbortSignal }): Promise<void> {
-  const cfg = getConfigOrNull();
+  let cfg = getConfigOrNull();
   if (!cfg) {
     return;
   }
-  await focusAndConnectSerialConsole();
+  // The console is a convenience here; a failed connect must not abort the
+  // sync (the *WithFallback helpers reopen the session themselves).
+  await focusAndConnectSerialConsole().catch((err) => {
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Serial console connect failed before sync: ${err}`);
+    return null;
+  });
   const srcDir = getConfiguredSrcDir(cfg);
   if (!srcDir || !fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
     vscode.window.showWarningMessage("This workspace is not a valid NodeMCU project. Run 'NodeMCU: Initialize Project' first.");
@@ -1033,27 +1072,38 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: resolving firmware path...`);
   const fw = await getFirmwarePath();
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: firmware ${fw ? fw : "unavailable"}.`);
+  let flashedDuringCheck = false;
   if (fw) {
     outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: checking selected C modules against device firmware...`);
-    const ok = await ensureFirmwareForSelectedModules(fw, cfg, port, opts.signal, isFreshWorkspace);
-    if (!ok) {
+    const check = await ensureFirmwareForSelectedModules(fw, cfg, port, opts.signal, isFreshWorkspace);
+    if (!check.ok) {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync aborted: firmware check/build failed.`);
+      setStatus("error", "sync aborted");
       vscode.window.showErrorMessage("Build and flash failed. Sync aborted.");
       return;
     }
+    flashedDuringCheck = check.flashed;
     outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: firmware check complete.`);
+  }
+
+  // Flashing claims the device (ensureKnownDevice runs before esptool), which
+  // rewrites nodemcu.ini. Re-read it so this pass doesn't operate on a stale
+  // snapshot and re-claim (and re-format for) the same device.
+  if (flashedDuringCheck) {
+    cfg = getConfigOrNull() ?? cfg;
   }
 
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: identifying attached device...`);
   const identity = await ensureKnownDevice(cfg, port, opts.signal);
   if (!identity.allowed) {
     outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync aborted: device identity was not allowed.`);
+    setStatus("error", "sync aborted");
     return;
   }
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: device ${identity.identity?.macAddress ?? "unknown"} accepted.`);
 
   const toolOpts = { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal: opts.signal };
-  if (opts.forceFormat || identity.isNew) {
+  if (opts.forceFormat || identity.isNew || (flashedDuringCheck && isFreshWorkspace)) {
     setStatus("uploading", `formatting ${port}...`);
     const formatted = await formatWithFallback(toolOpts);
     if (!formatted.success) {
@@ -1241,7 +1291,7 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
     const headerPath = userModulesHeader(fw);
     if (isCModulesConfigChanged(headerPath, cfg)) {
       outputChannel.appendLine("C modules changed — rebuilding and flashing before upload...");
-      await doBuildAndFlash(signal);
+      await buildAndFlashForSync(signal);
       if (statusEmitter.getState() !== "success") return;
     }
   }
@@ -1593,7 +1643,7 @@ function buildDeviceExplorerProvider(): AsyncTreeProvider {
       : ports.map((p) => ({
           id: `device-port-${p.path}`,
           label: p.path,
-          description: [p.manufacturer, p.path === selectedPort ? "selected" : ""].filter(Boolean).join(" "),
+          description: [serialPortDisplayName(p), p.path === selectedPort ? "selected" : ""].filter(Boolean).join(" "),
           collapsibleState: vscode.TreeItemCollapsibleState.None,
           contextValue: "nodemcu.serialPort",
           iconPath: new vscode.ThemeIcon(p.path === selectedPort ? "plug-filled" : "plug"),
@@ -1728,12 +1778,17 @@ function scheduleSrcSyncUri(uri: vscode.Uri): void {
     const currentCfg = getConfigOrNull();
     if (!currentCfg) return;
     outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] scheduleSrcSync: last_timestamp=${currentCfg.sync.last_timestamp || '(empty)'}`);
+    const surfaceError = (what: string) => (err: unknown) => {
+      outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] ${what} failed: ${err instanceof Error ? err.message : err}`);
+      setStatus("error", `${what} FAILED`);
+      vscode.window.showErrorMessage(`NodeMCU: ${what} failed: ${err instanceof Error ? err.message : err}`);
+    };
     if (currentCfg.sync.last_timestamp) {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, uploading single file...`);
-      void commandQueue.enqueue("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal));
+      commandQueue.enqueue("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal)).catch(surfaceError("upload"));
     } else {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, performing full sync...`);
-      void commandQueue.enqueue("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal }));
+      commandQueue.enqueue("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal })).catch(surfaceError("sync"));
     }
   }, 300);
 }

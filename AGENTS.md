@@ -502,6 +502,47 @@ caller-supplied reference. All callers (`mirrorSrcToDevice`, `doUploadSingleFile
 Also `scheduleSrcSync` was fixed to pass `currentCfg` (fresh) instead of `cfg`
 (stale outer closure) to `doUploadSingleFile`.
 
+### 9.2b Bug fixes (2026-06-11): serial wedge + duplicate first-sync mirror
+
+Found via the hardware e2e suite. Four related fixes:
+
+1. **`SerialSession.runExclusive` gate leak** (`src/serial/serialSession.ts`):
+   if `open()` threw (port busy), the exclusive gate was never released and
+   every later serial operation on the session awaited it forever. `open()` is
+   now inside the try whose finally releases the gate.
+2. **`SerialSession.open()` timeout**: the native `port.open` callback can fail
+   to fire after rapid open/close contention; a 10 s deadline now converts that
+   into an error instead of a permanent hang (which wedged the CommandQueue).
+3. **Nested duplicate mirror**: `doFlash` runs a full `mirrorSrcToDevice`
+   (force-format) after flashing a newly claimed device. When the flash was
+   itself triggered from inside `mirrorSrcToDevice`'s firmware check, the
+   device got formatted and synced twice and a misleading early "synced" toast
+   fired mid-run. Sync-internal callers now use `buildAndFlashForSync()` /
+   `flashFirmware(signal, { postFlashSync: false })`; the outer mirror re-reads
+   the config after a flash (the pre-flash device claim rewrites the ini) and
+   formats once via `flashedDuringCheck && isFreshWorkspace`.
+4. **Silent sync failures**: `scheduleSrcSyncUri` `void`-ed the enqueue promise,
+   so a thrown sync (e.g. `switchPort` failing) vanished and the status bar
+   stuck at "preparing sync...". Rejections are now logged, toasted, and the
+   status set to error; mirror abort paths also reset the status.
+5. **Stale-config clobber, round 2** (same class as §9.2): `ensureKnownDevice`
+   saved the caller's cfg snapshot when adding the device UUID. Initialize
+   Project kicks off the first sync immediately, so a module toggled while the
+   identity read was in flight got wiped from `nodemcu.ini` when the claim
+   landed. It (and `ensurePort`'s auto-port write) now re-read the live config
+   at write time. Rule of thumb: **never `saveConfig` a cfg object you've held
+   across an `await`** — merge into `getConfigOrNull()` at the moment of
+   writing.
+6. **Stale firmware flashed after a C-module change**: the firmware is a CMake
+   superbuild — the real compile is an ExternalProject whose build step is
+   gated by stamp files (`build/firmware-prefix/src/firmware-stamp/firmware-build`,
+   `firmware-done`, `build/CMakeFiles/firmware-complete`). A `user_modules.h`
+   rewrite does not invalidate those stamps, so the outer ninja can report
+   "no work to do" and the subsequent flash writes the previous binaries
+   (observed: coap enabled, header updated, device still boots without coap).
+   `BuildManager.build` now deletes the stamps whenever the module selection
+   changed; the inner build is dependency-tracked so it stays incremental.
+
 ### 9.3 Serial console and output focus
 
 The bottom-panel **NodeMCU Serial** console is the default live feedback surface.
@@ -517,12 +558,16 @@ normal command/sync flows because that steals focus from the Serial Console.
 
 ### 9.4 Known issues
 
-- **Lua Modules** view is empty. It should list every directory in
-  `firmware/lua_modules/` with a checkbox.
-- **C Modules** view is empty. Same as above for `app/modules/*.c` and the
-  hardcoded optional/library list.
-- `package.json#contributes.configuration["nodemcu-vscode.firmwarePath"]` still
-  has the legacy `"../nodemcu-firmware"` default. Change to `""` for new users.
+(2026-06-11: previous entries here are fixed — the Lua/C Modules views populate
+and round-trip checkbox state against a real EDH, and the
+`nodemcu-vscode.firmwarePath` default is now `""`. Verified by the hardware
+e2e suite, scenario 2.)
+
+- The hardware e2e suite (`tests/e2e/device_cdp_e2e.test.ts`) reads device
+  serial output directly. The extension's shared serial session owns the port,
+  so every direct read must be wrapped in `withSerialReleased()` (runs
+  **NodeMCU: Release Serial Port** before and **Reconnect Serial Port** after).
+  A bare `new SerialPort(...)` gets "Access denied" otherwise.
 
 ### 9.5 Things to verify before "fixing" anything
 

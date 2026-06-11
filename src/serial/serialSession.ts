@@ -34,6 +34,8 @@ export interface CommandResult {
   success: boolean;
 }
 
+const OPEN_TIMEOUT_MS = 10_000;
+
 export class SerialSession implements vscode.Disposable {
   readonly port: string;
   readonly baudRate: number;
@@ -150,7 +152,17 @@ export class SerialSession implements vscode.Disposable {
       port.on("data", handleData);
       port.on("error", handleError);
       port.on("close", handleClose);
+      // The native open callback can fail to fire when the driver is wedged
+      // (e.g. after rapid open/close contention on the port). Without a
+      // deadline this promise never settles and everything queued behind the
+      // session hangs forever.
+      const openTimer = setTimeout(() => {
+        this.setState("error");
+        rejectOnce(new Error(`Timed out opening serial port ${this.port}`));
+      }, OPEN_TIMEOUT_MS);
       port.open((error) => {
+        clearTimeout(openTimer);
+        if (settled) return;
         if (error) {
           this.setState("error");
           rejectOnce(error);
@@ -272,16 +284,19 @@ export class SerialSession implements vscode.Disposable {
 
     await previous;
     this.activeExclusiveCount += 1;
-    await this.open();
-    this.setState("busy");
-    const cursor = this.createCursor();
-
+    // The gate must be released on every exit path — including open() failing —
+    // or every later exclusive operation on this session deadlocks.
     try {
+      await this.open();
+      this.setState("busy");
+      const cursor = this.createCursor();
       return await fn(cursor);
     } finally {
       this.activeExclusiveCount -= 1;
       releaseGate();
-      this.setState(this.activeExclusiveCount > 0 ? "busy" : "ready");
+      if (this.portHandle?.isOpen) {
+        this.setState(this.activeExclusiveCount > 0 ? "busy" : "ready");
+      }
     }
   }
 

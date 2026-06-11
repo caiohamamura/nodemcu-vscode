@@ -5,6 +5,7 @@ coverage
 .tmp-extensions/**
 .tmp-user-dir/**
 .claude/**
+docs/**
 tests/**
 src/**
 tsconfig.json
