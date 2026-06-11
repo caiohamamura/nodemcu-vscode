@@ -147,9 +147,16 @@ export async function listCModules(firmwarePath: string): Promise<CModuleInfo[]>
       log(`Error checking library ${lib}: ${err}`);
     }
   }
-  log(`Returning ${out.length} modules before filtering mandatory`);
-  const filteredOut = out.filter(m => !MANDATORY_C_MODULES.has(m.name)).sort((a, b) => a.name.localeCompare(b.name));
-  log(`Returning ${filteredOut.length} modules after filtering mandatory`);
+  const byName = new Map<string, CModuleInfo>();
+  for (const module of out) {
+    if (MANDATORY_C_MODULES.has(module.name)) continue;
+    const existing = byName.get(module.name);
+    if (!existing || categoryRank(module.category) < categoryRank(existing.category)) {
+      byName.set(module.name, module);
+    }
+  }
+  const filteredOut = Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+  log(`Returning ${filteredOut.length} modules after filtering mandatory and duplicate names`);
   return filteredOut;
 }
 
@@ -159,5 +166,16 @@ async function exists(p: string): Promise<boolean> {
     return s.isDirectory();
   } catch {
     return false;
+  }
+}
+
+function categoryRank(category: CModuleInfo["category"]): number {
+  switch (category) {
+    case "optional":
+      return 0;
+    case "library":
+      return 1;
+    case "core":
+      return 2;
   }
 }

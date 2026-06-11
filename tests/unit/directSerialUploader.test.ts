@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DirectSerialUploader, validateRemoteName, type SerialUploadTransport } from "../../src/upload/directSerialUploader";
+import { DirectSerialUploader, SerialPortTransport, validateRemoteName, type SerialUploadTransport } from "../../src/upload/directSerialUploader";
 
 class FakeTransport implements SerialUploadTransport {
   writes: Array<string | Buffer> = [];
@@ -50,6 +50,13 @@ afterEach(() => {
 });
 
 describe("DirectSerialUploader", () => {
+  it("does not treat the Lua continuation prompt as a completed prompt", async () => {
+    const transport = new SerialPortTransport("COM7", 115200) as unknown as { buffer: string; waitForPrompt(timeoutMs: number): Promise<string> };
+    transport.buffer = "\r\n>> ";
+
+    await expect(transport.waitForPrompt(80)).rejects.toThrow(/Timed out/);
+  });
+
   it("writes a temp file before replacing init.lua", async () => {
     const transport = new FakeTransport();
     const uploader = new DirectSerialUploader(() => transport);
@@ -114,7 +121,7 @@ describe("DirectSerialUploader", () => {
 
   it("downloads file content over direct serial", async () => {
     const payload = Buffer.from("print('hi')\n").toString("hex");
-    const transport = new FakeTransport(["\r\n>", `__VSCODE_BEGIN__OK:${payload}__VSCODE_END__\r\n>`]);
+    const transport = new FakeTransport(["\r\n>", "\r\n>", `__VSCODE_BEGIN__OK:${payload}__VSCODE_END__\r\n>`]);
     const uploader = new DirectSerialUploader(() => transport);
 
     const result = await uploader.download(
@@ -126,6 +133,20 @@ describe("DirectSerialUploader", () => {
     expect(result.success).toBe(true);
     expect(result.content?.toString("utf-8")).toBe("print('hi')\n");
     expect(transport.writes.map((w) => w.toString()).some((cmd) => cmd.includes("file.open(\"init.lua\",\"r\")"))).toBe(true);
+  });
+
+  it("reports NodeMCU Lua errors with non-decimal line labels", async () => {
+    const transport = new FakeTransport(["\r\n>", "\r\nLua error: \tstdin:g: '<eof>' expected near 'end'\r\n>"]);
+    const uploader = new DirectSerialUploader(() => transport);
+
+    const result = await uploader.download(
+      { python: "python", port: "COM7", baud: 115200, baudUpload: 115200, compile: false },
+      "init.lua",
+      () => {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("stdin:g");
   });
 
   it("lists device files over direct serial", async () => {

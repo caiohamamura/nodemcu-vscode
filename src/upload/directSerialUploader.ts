@@ -38,7 +38,7 @@ function luaError(output: string): string | null {
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && line !== ">");
   const line = lines.find((candidate) =>
-    /^(stdin:\d+:|[\w./\\-]+\.lua:\d+:|PANIC:|lua:)/i.test(candidate)
+    /^(stdin:[^:]+:|[\w./\\-]+\.lua:[^:]+:|PANIC:|lua:|Lua error:)/i.test(candidate)
   );
   return line ? `NodeMCU reported: ${line}` : null;
 }
@@ -103,7 +103,8 @@ export class SerialPortTransport implements SerialUploadTransport {
   async waitForPrompt(timeoutMs: number): Promise<string> {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
-      if (/(^|[\r\n])>\s*$/.test(this.buffer) || this.buffer.trimEnd().endsWith(">")) {
+      const trimmed = this.buffer.trimEnd();
+      if (/(^|[\r\n])>\s*$/.test(this.buffer) || (trimmed.endsWith(">") && !trimmed.endsWith(">>"))) {
         const out = this.buffer;
         this.buffer = "";
         return out;
@@ -258,14 +259,31 @@ export class DirectSerialUploader {
       const transport = this.createTransport(opts.port, baudRate);
       try {
         await this.connectToPrompt(transport);
+        await this.execute(
+          transport,
+          [
+            `_G.__vscode_hexout=function(c)`,
+            `local h="0123456789abcdef";`,
+            `for i=1,#c do`,
+            `local b=c:byte(i);`,
+            `local hi=bit.rshift(b,4)+1;`,
+            `local lo=bit.band(b,15)+1;`,
+            `uart.write(0,h:sub(hi,hi),h:sub(lo,lo));`,
+            `end;`,
+            `end`,
+          ].join(" "),
+        );
         const output = await this.execute(
           transport,
           [
-            `uart.write(0,${luaString(BEGIN_MARKER)})`,
+            `uart.write(0,${luaString(BEGIN_MARKER)});`,
             `if file.open(${luaString(remoteName)},"r") then`,
-            `uart.write(0,"OK:")`,
-            `repeat local c=file.read(64) if c then for i=1,#c do uart.write(0,string.format("%02x",string.byte(c,i))) end end until not c`,
-            `file.close() else uart.write(0,"ERR:open") end`,
+            `uart.write(0,"OK:");`,
+            `repeat local c=file.read(64);`,
+            `if c then __vscode_hexout(c); end`,
+            `until not c;`,
+            `file.close();`,
+            `else uart.write(0,"ERR:open"); end;`,
             `uart.write(0,${luaString(END_MARKER)})`,
           ].join(" "),
         );
@@ -309,11 +327,11 @@ export class DirectSerialUploader {
         const output = await this.execute(
           transport,
           [
-            `uart.write(0,${luaString(BEGIN_MARKER)})`,
+            `uart.write(0,${luaString(BEGIN_MARKER)});`,
             `for name,size in pairs(file.list()) do`,
             `for i=1,#name do uart.write(0,string.format("%02x",string.byte(name,i))) end`,
-            `uart.write(0,string.char(9),tostring(size),string.char(10))`,
-            `end`,
+            `uart.write(0,string.char(9),tostring(size),string.char(10));`,
+            `end;`,
             `uart.write(0,${luaString(END_MARKER)})`,
           ].join(" "),
         );

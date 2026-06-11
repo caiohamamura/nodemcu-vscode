@@ -9,7 +9,7 @@ import { ToolchainLocator } from "../src/build/toolchain";
 import { FlashManager } from "../src/flash/flashManager";
 import { ensureManagedFirmware } from "../src/firmware/managedFirmware";
 import { Shell } from "../src/util/shell";
-import { NodemcuTool } from "../src/upload/nodemcuTool";
+import { DirectSerialUploader } from "../src/upload/directSerialUploader";
 
 const storageRoot = process.env.NODEMCU_VSCODE_STORAGE_ROOT || path.join(os.homedir(), ".nodemcu-vscode");
 
@@ -161,12 +161,15 @@ async function main(): Promise<void> {
 
   console.log("\n== NodeMCU file-system probe ==");
   await new Promise((resolve) => setTimeout(resolve, 3000));
-  const tool = new NodemcuTool(shell);
+  const tool = new DirectSerialUploader();
   const files = await tool.listFiles(
     { python: "python", port, baud: cfg.nodemcu.baud, baudUpload: cfg.nodemcu.upload_baud, compile: false },
     (s) => process.stdout.write(s),
   );
-  console.log("FILES=" + JSON.stringify(files, null, 2));
+  if (!files.success) {
+    throw new Error(`File-system probe failed: ${files.error}`);
+  }
+  console.log("FILES=" + JSON.stringify(files.files, null, 2));
 }
 
 main().catch((error) => {

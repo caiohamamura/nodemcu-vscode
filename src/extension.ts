@@ -323,7 +323,7 @@ async function getFirmwarePath(): Promise<string | null> {
       const fwPath = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "NodeMCU firmware", cancellable: false },
         async (progress) => ensureManagedFirmware({
-          storageRoot: extensionContext.globalStorageUri.fsPath,
+          storageRoot: process.env.NODEMCU_VSCODE_STORAGE_ROOT || extensionContext.globalStorageUri.fsPath,
           onProgress: (message) => progress.report({ message }),
         }),
       );
@@ -1018,23 +1018,39 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     return;
   }
   outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Mirroring src/ to device...`);
+  setStatus("uploading", `preparing sync...`);
 
   const python = getPythonPath();
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: selecting serial port...`);
   const port = await ensurePort(cfg);
-  if (!port) return;
+  if (!port) {
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync aborted: no serial port selected.`);
+    return;
+  }
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: using ${port}.`);
 
   const isFreshWorkspace = cfg.devices.uuids.length === 0;
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: resolving firmware path...`);
   const fw = await getFirmwarePath();
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: firmware ${fw ? fw : "unavailable"}.`);
   if (fw) {
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: checking selected C modules against device firmware...`);
     const ok = await ensureFirmwareForSelectedModules(fw, cfg, port, opts.signal, isFreshWorkspace);
     if (!ok) {
+      outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync aborted: firmware check/build failed.`);
       vscode.window.showErrorMessage("Build and flash failed. Sync aborted.");
       return;
     }
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: firmware check complete.`);
   }
 
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: identifying attached device...`);
   const identity = await ensureKnownDevice(cfg, port, opts.signal);
-  if (!identity.allowed) return;
+  if (!identity.allowed) {
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync aborted: device identity was not allowed.`);
+    return;
+  }
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: device ${identity.identity?.macAddress ?? "unknown"} accepted.`);
 
   const toolOpts = { python, port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal: opts.signal };
   if (opts.forceFormat || identity.isNew) {
@@ -1047,12 +1063,14 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     }
   }
 
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: listing device files...`);
   const remote = await listFilesWithFallback(toolOpts, false);
   if (!remote.success) {
     setStatus("error", "sync FAILED");
     vscode.window.showErrorMessage(`Unable to list device files before sync: ${remote.error}`);
     return;
   }
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Sync step: listed ${(remote.files ?? []).length} device file(s).`);
 
   const uploadTimestamps = extensionContext
     ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
@@ -1697,10 +1715,10 @@ class LuaModuleCompletionProvider implements vscode.CompletionItemProvider {
   }
 }
 
-function scheduleSrcSync(document: vscode.TextDocument): void {
+function scheduleSrcSyncUri(uri: vscode.Uri): void {
   const cfg = getConfigOrNull();
-  if (!cfg || !isUriUnderSrc(document.uri, cfg)) return;
-  lastSavedUri = document.uri;
+  if (!cfg || !isUriUnderSrc(uri, cfg)) return;
+  lastSavedUri = uri;
   if (srcSaveTimer) clearTimeout(srcSaveTimer);
   srcSaveTimer = setTimeout(() => {
     srcSaveTimer = undefined;
@@ -1718,6 +1736,10 @@ function scheduleSrcSync(document: vscode.TextDocument): void {
       void commandQueue.enqueue("Sync src/", (signal) => mirrorSrcToDevice({ changedOnly: false, signal }));
     }
   }, 300);
+}
+
+function scheduleSrcSync(document: vscode.TextDocument): void {
+  scheduleSrcSyncUri(document.uri);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -1772,10 +1794,14 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: cModulesProvider,
     manageCheckboxStateManually: true,
   });
+  const srcFileWatcher = vscode.workspace.createFileSystemWatcher("**/*");
   context.subscriptions.push(
     luaTreeView,
     cTreeView,
+    srcFileWatcher,
     vscode.workspace.onDidSaveTextDocument(scheduleSrcSync),
+    srcFileWatcher.onDidChange(scheduleSrcSyncUri),
+    srcFileWatcher.onDidCreate(scheduleSrcSyncUri),
     vscode.workspace.onDidDeleteFiles(handleFileDelete),
   );
 

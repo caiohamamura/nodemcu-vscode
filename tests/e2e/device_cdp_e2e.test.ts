@@ -203,7 +203,14 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
         `--remote-debugging-port=${DEBUG_PORT}`,
         WORKSPACE_DIR,
       ],
-      { detached: false, shell: true },
+      {
+        detached: false,
+        shell: true,
+        env: {
+          ...process.env,
+          NODEMCU_VSCODE_STORAGE_ROOT: process.env.NODEMCU_VSCODE_STORAGE_ROOT || path.join(os.homedir(), ".nodemcu-vscode"),
+        },
+      },
     );
     codeProcess.stderr?.on("data", (d) => console.log(`[vscode] ${d}`));
 

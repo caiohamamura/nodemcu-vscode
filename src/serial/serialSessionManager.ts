@@ -57,7 +57,27 @@ export class SerialSessionManager implements vscode.Disposable {
     try {
       return await fn();
     } finally {
-      await session.open();
+      try {
+        await withTimeout(session.open(), 5_000, `Timed out reopening serial session on ${port}`);
+      } catch {
+        this.currentSession = undefined;
+        this.onDidChangeSessionEmitter.fire(undefined);
+        session.dispose();
+      }
     }
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
