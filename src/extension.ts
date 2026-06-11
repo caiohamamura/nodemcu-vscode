@@ -18,7 +18,7 @@ import {
 import { IniCompletionItemProvider } from "./config/iniCompletion";
 import { ConfigWatcher } from "./config/configWatcher";
 import { resolveFirmwarePath, luaModulesDir, userModulesHeader } from "./util/paths";
-import { isCModulesConfigChanged, writeUserModulesHeader } from "./build/userModulesWriter";
+import { isCModulesConfigChanged } from "./build/userModulesWriter";
 import { BuildManager } from "./build/buildManager";
 import { ToolchainLocator } from "./build/toolchain";
 import { FlashManager } from "./flash/flashManager";
@@ -147,6 +147,8 @@ let lastSavedUri: vscode.Uri | undefined;
 let pythonManager: PythonManager | undefined;
 let managedCMakePath: string | undefined;
 let managedNinjaPath: string | undefined;
+
+const LEGACY_DEFAULT_FIRMWARE_PATH = "../nodemcu-firmware";
 
 function getPythonPath(): string {
   if (pythonManager?.python) return pythonManager.python;
@@ -304,7 +306,7 @@ async function getFirmwarePath(): Promise<string | null> {
   const cfg = getConfigOrNull();
   const configuredSetting = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("firmwarePath");
   const configuredIni = cfg?.nodemcu.firmware_path ?? "";
-  const configured = configuredSetting || configuredIni;
+  const configured = normalizeConfiguredFirmwarePath(configuredSetting || configuredIni);
   if (configured.trim()) {
     const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot && !path.isAbsolute(configured)) return null;
@@ -321,7 +323,7 @@ async function getFirmwarePath(): Promise<string | null> {
       const fwPath = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "NodeMCU firmware", cancellable: false },
         async (progress) => ensureManagedFirmware({
-          storageRoot: path.join(os.tmpdir(), "nodemcu-vscode-firmware"),
+          storageRoot: extensionContext.globalStorageUri.fsPath,
           onProgress: (message) => progress.report({ message }),
         }),
       );
@@ -339,6 +341,11 @@ async function getFirmwarePath(): Promise<string | null> {
   })();
 
   return pendingFirmwarePromise;
+}
+
+function normalizeConfiguredFirmwarePath(value: string | undefined): string {
+  const trimmed = (value ?? "").trim();
+  return trimmed === LEGACY_DEFAULT_FIRMWARE_PATH ? "" : trimmed;
 }
 
 function refreshAll(): void {
@@ -626,19 +633,8 @@ async function doSelectPort(item?: { serialPort?: SerialPort } | SerialPort): Pr
 }
 
 async function doBuild(signal?: AbortSignal): Promise<void> {
-  const logFile = "c:\\Users\\caioh\\src\\vscode\\nodemcu-vscode\\build_debug.log";
-  const log = (msg: string) => {
-    try {
-      require("node:fs").appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`, "utf-8");
-    } catch {}
-  };
-  log("doBuild called");
-  const iniPath = getIniPath();
-  log(`getIniPath: ${iniPath}`);
   const cfg = getConfigOrNull();
-  log(`getConfigOrNull: ${JSON.stringify(cfg)}`);
   const fw = await getFirmwarePath();
-  log(`getFirmwarePath: ${fw}`);
   if (!cfg) {
     vscode.window.showErrorMessage("No nodemcu.ini found in workspace. Run 'NodeMCU: Initialize Project' first.");
     return;
@@ -974,11 +970,20 @@ async function ensureFirmwareForSelectedModules(
     outputChannel.appendLine(
       `Device is running NodeMCU ${info.version ?? "(unknown version)"} with ${info.modules.length} module(s): ${info.modules.join(", ")}.`,
     );
-    const missing = selected.filter((m) => !info.modules.includes(m));
+    if (isFreshWorkspace && !info.version) {
+      outputChannel.appendLine("Fresh workspace: device banner did not identify NodeMCU firmware — building and flashing firmware...");
+      await doBuildAndFlash(signal);
+      return statusEmitter.getState() === "success";
+    }
+    const deviceModules = new Set(info.modules.map((m) => m.toLowerCase()));
+    const missing = selected.filter((m) => !deviceModules.has(m.toLowerCase()));
     if (missing.length === 0) {
       outputChannel.appendLine(`All ${selected.length} selected C module(s) are already present on the device.`);
     } else {
       outputChannel.appendLine(`Selected C module(s) not yet on the device firmware: ${missing.join(", ")}.`);
+      outputChannel.appendLine("Device firmware does not match selected C modules — rebuilding and flashing before sync...");
+      await doBuildAndFlash(signal);
+      return statusEmitter.getState() === "success";
     }
   } else {
     outputChannel.appendLine("Could not read the device firmware banner (port busy or not running NodeMCU).");
@@ -1506,7 +1511,6 @@ async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
   if (iniPath) {
     cachedConfig = newCfg;
     saveConfig(iniPath, newCfg);
-    writeUserModulesHeader(userModulesHeader(fw), newCfg);
     refreshAll();
   }
 }

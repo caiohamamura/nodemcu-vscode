@@ -60,6 +60,7 @@ export class ToolchainLocator {
 }
 
 export function cmakeConfigureCommand(opts: {
+  cmake?: string;
   firmwarePath: string;
   buildDir: string;
   generator: ToolchainInfo["generator"];
@@ -77,10 +78,11 @@ export function cmakeConfigureCommand(opts: {
   if (opts.luaNumberIntegral) args.push("-DLUA_NUMBER_INTEGRAL=ON");
   if (opts.luaNumber64bits) args.push("-DLUA_NUMBER_64BITS=ON");
   if (opts.verbose) args.push("-DCMAKE_VERBOSE_MAKEFILE=ON");
-  return { command: "cmake", args, cwd: opts.firmwarePath };
+  return { command: opts.cmake || "cmake", args, cwd: opts.firmwarePath };
 }
 
 export function cmakeBuildCommand(opts: {
+  cmake?: string;
   buildDir: string;
   parallel: boolean;
   jobCount: number;
@@ -93,7 +95,7 @@ export function cmakeBuildCommand(opts: {
     args.push("-j", String(opts.jobCount));
   }
   if (opts.verbose) args.push("-v");
-  return { command: "cmake", args, cwd: opts.buildDir };
+  return { command: opts.cmake || "cmake", args, cwd: opts.buildDir };
 }
 
 export function normalizeFlashSize(value: string): string {

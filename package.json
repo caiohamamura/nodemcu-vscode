@@ -258,6 +258,11 @@
           "default": "src",
           "description": "Directory containing scripts to monitor and upload automatically."
         },
+        "nodemcu-vscode.firmwarePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom NodeMCU firmware checkout. Leave empty to use the managed downloaded firmware."
+        },
         "nodemcu-vscode.port": {
           "type": "string",
           "default": "",

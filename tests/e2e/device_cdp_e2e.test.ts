@@ -1,6 +1,6 @@
 /**
  * End-to-end test: drives a real VS Code Extension Development Host over Chrome
- * DevTools Protocol against a REAL ESP8266 on COM7, verifying the full NodeMCU
+ * DevTools Protocol against a REAL ESP8266, verifying the full NodeMCU
  * workflow. The selectors and timings here were proven interactively first (see
  * .claude/SKILLS/devtools-automation/notes/nodemcu-e2e-flow.md).
  *
@@ -9,9 +9,11 @@
  *   2. Select (and clear) a C module and a Lua module — assert ini + checkbox.
  *   3. Edit src/init.lua, save, and confirm the new file uploads AND runs
  *      (verified by reading the device's serial output directly).
- *   4. Enable the Lua `fifo` module from the side panel and confirm it is usable
+ *   4. Enable the C `coap` module, save, and confirm build/flash runs and the
+ *      boot banner advertises `coap`.
+ *   5. Enable the Lua `fifo` module from the side panel and confirm it is usable
  *      in a Lua script after a plain save (no manual "Sync Lua Modules" step).
- *   5. Disable `fifo` and assert it is removed from the device.
+ *   6. Disable `fifo` and assert it is removed from the device.
  *
  * Requires hardware, so it only runs when NODEMCU_VSCODE_E2E_HARDWARE=1 and the
  * VS Code CLI exists; otherwise the suite is skipped (keeps `npm test` clean).
@@ -153,7 +155,17 @@ async function readDeviceSerial(marker: string, timeoutMs = 12_000): Promise<{ f
   return { found, lines };
 }
 
-describe_("NodeMCU e2e (CDP + COM7 hardware)", () => {
+async function readDeviceModules(timeoutMs = 20_000): Promise<{ modules: string[]; lines: string[] }> {
+  const { lines } = await readDeviceSerial("modules:", timeoutMs);
+  const text = lines.join("\n");
+  const match = /modules:\s*([^\r\n]+)/i.exec(text);
+  const modules = match
+    ? match[1].split(/[;,\s]+/).map((m) => m.trim().toLowerCase()).filter(Boolean)
+    : [];
+  return { modules, lines };
+}
+
+describe_("NodeMCU e2e (CDP + hardware)", () => {
   let client: CDPClient;
   let codeProcess: child_process.ChildProcess;
   const extensionPath = path.resolve(__dirname, "../..");
@@ -414,17 +426,23 @@ describe_("NodeMCU e2e (CDP + COM7 hardware)", () => {
     const started = Date.now();
     let claimed = false;
     let sawActive = false;
+    let lastJoined = "";
+    const history: string[] = [];
     while (Date.now() - started < timeoutMs) {
       if (!claimed && (await clickProceedIfPresent())) claimed = true;
       const joined = (await getToasts()).join(" | ");
+      if (joined && joined !== lastJoined) {
+        history.push(joined);
+        lastJoined = joined;
+      }
       if (/uploading|syncing|formatting|removing|building|flashing/i.test(joined)) sawActive = true;
-      if (/FAILED|failed to/i.test(joined)) throw new Error(`Upload failed. Toasts: ${joined}`);
+      if (/FAILED|failed to/i.test(joined)) throw new Error(`Upload failed. Toasts: ${history.join(" || ")}`);
       // Require having seen the new operation's active phase before accepting a
       // success toast, so a lingering success toast can't satisfy us early.
-      if (sawActive && /(synced \d+ operation|uploaded )/i.test(joined)) return joined;
+      if (sawActive && /(synced \d+ operation|uploaded )/i.test(joined)) return history.join(" || ");
       await sleep(400);
     }
-    throw new Error(`Timed out waiting for upload result. Toasts: ${(await getToasts()).join(" | ")}`);
+    throw new Error(`Timed out waiting for upload result. Toasts: ${history.join(" || ") || (await getToasts()).join(" | ")}`);
   }
 
   function readIni(): string {
@@ -446,8 +464,10 @@ describe_("NodeMCU e2e (CDP + COM7 hardware)", () => {
     expect(fs.existsSync(iniPath), "nodemcu.ini created").toBe(true);
     expect(fs.existsSync(initLuaPath), "src/init.lua created").toBe(true);
     // Port auto-detected and written (may land a moment after the ini is created).
-    for (let i = 0; i < 15 && !/port\s*=\s*COM7/i.test(readIni()); i++) await sleep(1000);
-    expect(readIni()).toMatch(/port\s*=\s*COM7/i);
+    const escapedPort = PORT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const portPattern = new RegExp(`port\\s*=\\s*${escapedPort}`, "i");
+    for (let i = 0; i < 15 && !portPattern.test(readIni()); i++) await sleep(1000);
+    expect(readIni()).toMatch(portPattern);
   }, 60_000);
 
   it("2. selects and clears a C module and a Lua module (ini + checkbox round-trip)", async () => {
@@ -482,7 +502,24 @@ describe_("NodeMCU e2e (CDP + COM7 hardware)", () => {
     expect(found, `device serial should print ${marker}. Lines: ${lines.slice(-8).join(" / ")}`).toBe(true);
   }, 180_000);
 
-  it("4. enabling the fifo Lua module makes it usable after a plain save (no manual sync)", async () => {
+  it("4. enabling the coap C module rebuilds/flashes and the boot banner lists it", async () => {
+    await focusNodeMcuSidebar();
+    await expandPanes();
+    if ((await moduleChecked("C Modules", "coap")) !== true) await toggleModule("C Modules", "coap");
+    expect(readIni()).toMatch(/coap\s*=\s*true/i);
+
+    const marker = `COAP_REBUILD_${RUN_ID.replace(/[^a-zA-Z0-9]/g, "")}`;
+    await editAndSaveInitLua(`print("${marker}")`);
+    const result = await waitForUpload(900_000);
+    expect(result).toMatch(/building/i);
+    expect(result).toMatch(/flashing/i);
+    expect(result).toMatch(/uploaded|synced/i);
+
+    const { modules, lines } = await readDeviceModules(30_000);
+    expect(modules, `boot banner modules should include coap. Lines: ${lines.slice(-12).join(" / ")}`).toContain("coap");
+  }, 960_000);
+
+  it("5. enabling the fifo Lua module makes it usable after a plain save (no manual sync)", async () => {
     await focusNodeMcuSidebar();
     await expandPanes();
     if ((await moduleChecked("Lua Modules", "fifo")) !== true) await toggleModule("Lua Modules", "fifo");
@@ -498,7 +535,7 @@ describe_("NodeMCU e2e (CDP + COM7 hardware)", () => {
     expect(fifoLine, `fifo should load (true table). Got: ${fifoLine}`).toMatch(/FIFO_OK\s+true\s+table/i);
   }, 120_000);
 
-  it("5. disabling the fifo module removes it from the device", async () => {
+  it("6. disabling the fifo module removes it from the device", async () => {
     await focusNodeMcuSidebar();
     await expandPanes();
     if ((await moduleChecked("Lua Modules", "fifo")) === true) await toggleModule("Lua Modules", "fifo");

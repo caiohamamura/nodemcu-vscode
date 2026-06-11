@@ -11,13 +11,7 @@ import { ensureManagedFirmware } from "../src/firmware/managedFirmware";
 import { Shell } from "../src/util/shell";
 import { NodemcuTool } from "../src/upload/nodemcuTool";
 
-const storageRoot = path.join(
-  process.env.APPDATA ?? "",
-  "Code",
-  "User",
-  "globalStorage",
-  "undefined_publisher.nodemcu-vscode",
-);
+const storageRoot = process.env.NODEMCU_VSCODE_STORAGE_ROOT || path.join(os.homedir(), ".nodemcu-vscode");
 
 let firmwarePath = path.join(
   storageRoot,
@@ -84,13 +78,16 @@ async function main(): Promise<void> {
   });
 
   const cfg = parseIni(fs.readFileSync("nodemcu.ini", "utf-8"));
-  const port = cfg.nodemcu.port || "COM7";
+  const port = process.env.NODEMCU_VSCODE_SERIAL_PORT || cfg.nodemcu.port;
+  if (!port) {
+    throw new Error("No serial port configured. Set [nodemcu] port in nodemcu.ini or NODEMCU_VSCODE_SERIAL_PORT.");
+  }
   console.log(JSON.stringify({ firmwarePath, port, modules: cfg.c_modules }, null, 2));
 
   console.log("\n== Pre-flash ESP8266 probe ==");
   const probe = run("python", ["-m", "esptool", "--port", port, "--baud", String(cfg.nodemcu.baud), "chip-id"], 60_000);
   if (probe.status !== 0 || !/ESP8266/i.test((probe.stdout ?? "") + (probe.stderr ?? ""))) {
-    throw new Error(`COM7 did not respond as ESP8266 before flashing; exit=${probe.status}`);
+    throw new Error(`${port} did not respond as ESP8266 before flashing; exit=${probe.status}`);
   }
 
   console.log("\n== Clean build ==");
@@ -128,7 +125,7 @@ async function main(): Promise<void> {
     console.log(`${name}: ${file} (${stat.size} bytes)`);
   }
 
-  console.log("\n== Flash COM7 ==");
+  console.log(`\n== Flash ${port} ==`);
   let flashOut = "";
   let flashErr = "";
   const flash = await new FlashManager(shell).flash({
@@ -155,7 +152,7 @@ async function main(): Promise<void> {
   console.log("\n== Post-flash ESP8266 probe ==");
   const postProbe = run("python", ["-m", "esptool", "--port", port, "--baud", String(cfg.nodemcu.baud), "chip-id"], 60_000);
   if (postProbe.status !== 0) {
-    throw new Error(`COM7 did not respond after flashing; exit=${postProbe.status}`);
+    throw new Error(`${port} did not respond after flashing; exit=${postProbe.status}`);
   }
 
   console.log("\n== Lua prompt probe ==");

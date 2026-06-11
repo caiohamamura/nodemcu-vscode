@@ -85,13 +85,16 @@ export class BuildManager {
     }
 
     let generator: ToolchainInfo["generator"] = ctx.generator;
+    let cmake = ctx.preferredCmake || "cmake";
     if (generator === "Unknown") {
       const toolchain = await new ToolchainLocator(this.shell, undefined, ctx.preferredCmake, ctx.preferredNinja).locate();
       generator = toolchain.generator;
+      cmake = toolchain.cmake;
     }
 
     if (needsReconfigure) {
       const configureCmd = cmakeConfigureCommand({
+        cmake,
         firmwarePath: ctx.firmwarePath,
         buildDir,
         generator,
@@ -121,6 +124,7 @@ export class BuildManager {
     }
 
     const buildCmd = cmakeBuildCommand({
+      cmake,
       buildDir,
       parallel: ctx.parallel,
       jobCount: ctx.jobCount,

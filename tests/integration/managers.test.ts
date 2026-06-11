@@ -141,6 +141,75 @@ describe("BuildManager (integration, mocked shell)", () => {
     expect(header).toMatch(/^#define LUA_USE_MODULES_MQTT$/m);
     expect(header).toMatch(/^\/\/#define LUA_USE_MODULES_ADC$/m);
   });
+
+  it("reconfigures, rebuilds, then flashes when nodemcu.ini C modules change", async () => {
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 0, stdout: "Configuring\n" });
+    shell.nextResponse({ exitCode: 0, stdout: "Building\n" });
+    shell.nextResponse({ exitCode: 0, stdout: "Writing flash\n" });
+
+    const cfg = defaultConfig();
+    cfg.c_modules = { wifi: true, coap: true };
+
+    const build = await new BuildManager(shell as unknown as Shell).build({
+      firmwarePath: fwPath,
+      config: cfg,
+      parallel: true,
+      jobCount: 4,
+      verbose: false,
+      generator: "Ninja",
+      onLog: () => { },
+      onStderr: () => { },
+    });
+    expect(build.success).toBe(true);
+    expect(build.needsReconfigure).toBe(true);
+    expect(build.modulesChanged.added).toContain("coap");
+
+    const flash = await new FlashManager(shell as unknown as Shell).flash({
+      python: "python",
+      firmwarePath: fwPath,
+      config: cfg,
+      port: "COM42",
+      onLog: () => { },
+      onStderr: () => { },
+    });
+    expect(flash.success).toBe(true);
+
+    expect(shell.calls).toHaveLength(3);
+    expect(shell.calls[0].command).toBe("cmake");
+    expect(shell.calls[0].args).toContain("-S");
+    expect(shell.calls[1].command).toBe("cmake");
+    expect(shell.calls[1].args).toContain("--build");
+    expect(shell.calls[2].command).toBe("python");
+    expect(shell.calls[2].args).toContain("write_flash");
+    expect(shell.calls[2].args).toContain("COM42");
+  });
+
+  it("runs configure and build through the resolved managed CMake executable", async () => {
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 0, stdout: "Configuring\n" });
+    shell.nextResponse({ exitCode: 0, stdout: "Building\n" });
+    const cfg = defaultConfig();
+    cfg.c_modules = { wifi: true, coap: true };
+
+    const build = await new BuildManager(shell as unknown as Shell).build({
+      firmwarePath: fwPath,
+      config: cfg,
+      parallel: true,
+      jobCount: 4,
+      verbose: false,
+      generator: "Ninja",
+      preferredCmake: "/managed/cmake",
+      onLog: () => { },
+      onStderr: () => { },
+    });
+
+    expect(build.success).toBe(true);
+    expect(shell.calls[0].command).toBe("/managed/cmake");
+    expect(shell.calls[0].args).toContain("-S");
+    expect(shell.calls[1].command).toBe("/managed/cmake");
+    expect(shell.calls[1].args).toContain("--build");
+  });
 });
 
 describe("FlashManager (integration, mocked shell)", () => {

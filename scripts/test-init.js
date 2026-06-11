@@ -3,7 +3,10 @@ const { ReadlineParser } = require('@serialport/parser-readline');
 const cp = require('child_process');
 const fs = require('fs');
 
-const portPath = process.argv[2] || "COM7";
+const portPath = process.argv[2] || process.env.NODEMCU_VSCODE_SERIAL_PORT;
+if (!portPath) {
+  throw new Error("Usage: node scripts/test-init.js <serial-port> or set NODEMCU_VSCODE_SERIAL_PORT");
+}
 
 try {
   // 1. Create init.lua

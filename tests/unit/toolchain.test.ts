@@ -19,6 +19,20 @@ describe("cmakeConfigureCommand", () => {
     expect(cmd.args).not.toContain(expect.stringMatching(/CMAKE_TOOLCHAIN_FILE/));
   });
 
+  it("uses an explicit cmake executable when provided", () => {
+    const cmd = cmakeConfigureCommand({
+      cmake: "/managed/cmake",
+      firmwarePath: "/fw",
+      buildDir: "/fw/build",
+      generator: "Ninja",
+      luaVersion: "53",
+      luaNumberIntegral: false,
+      luaNumber64bits: false,
+      verbose: false,
+    });
+    expect(cmd.command).toBe("/managed/cmake");
+  });
+
   it("includes LUA_NUMBER_INTEGRAL when set", () => {
     const cmd = cmakeConfigureCommand({
       firmwarePath: "/fw",
@@ -47,6 +61,11 @@ describe("cmakeBuildCommand", () => {
   it("omits -j when parallel is false", () => {
     const cmd = cmakeBuildCommand({ buildDir: "/fw/build", parallel: false, jobCount: 4, verbose: false });
     expect(cmd.args).not.toContain("-j");
+  });
+
+  it("uses an explicit cmake executable when provided", () => {
+    const cmd = cmakeBuildCommand({ cmake: "/managed/cmake", buildDir: "/fw/build", parallel: false, jobCount: 4, verbose: false });
+    expect(cmd.command).toBe("/managed/cmake");
   });
 });
 
