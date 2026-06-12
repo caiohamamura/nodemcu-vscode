@@ -204,6 +204,32 @@ async function readDeviceModules(timeoutMs = 20_000): Promise<{ modules: string[
   return { modules, lines };
 }
 
+async function canOpenSerialPort(): Promise<boolean> {
+  let sp: SerialPort | null = null;
+  try {
+    sp = await new Promise<SerialPort>((resolve, reject) => {
+      const p = new SerialPort({ path: PORT, baudRate: BAUD_RATE }, (err) => (err ? reject(err) : resolve(p)));
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (sp?.isOpen) {
+      await new Promise<void>((resolve) => sp!.close(() => resolve()));
+      await sleep(process.platform === "win32" ? 1200 : 250);
+    }
+  }
+}
+
+async function waitForSerialPortAvailable(timeoutMs = 30_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await canOpenSerialPort()) return true;
+    await sleep(750);
+  }
+  return false;
+}
+
 describe_("NodeMCU e2e (CDP + hardware)", () => {
   let client: CDPClient;
   let codeProcess: child_process.ChildProcess;
@@ -460,9 +486,20 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     await client.evaluate(
       `(() => { const i = document.querySelector('.quick-input-box input'); i.focus(); i.value = ${JSON.stringify(`>${label}`)}; i.dispatchEvent(new Event('input', { bubbles: true })); })()`,
     );
-    await sleep(700);
+    for (let i = 0; i < 40; i++) {
+      const ready = await client.evaluate(`
+        (() => Array.from(document.querySelectorAll('.quick-input-list .monaco-list-row, .quick-input-list .monaco-list-row .label-name'))
+          .some(e => (e.textContent || '').trim().includes(${JSON.stringify(label)})))()
+      `);
+      if (ready) break;
+      await sleep(250);
+    }
     await pressKey(0x0d, "Enter", "Enter");
-    await sleep(400);
+    for (let i = 0; i < 20; i++) {
+      const open = await client.evaluate(`(() => !!document.querySelector('.quick-input-box input'))()`);
+      if (!open) break;
+      await sleep(200);
+    }
   }
 
   /** Clear lingering notification toasts so the next upload's toasts are unambiguous. */
@@ -477,7 +514,12 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
    * Release Serial Port frees the port within ~3s, Reconnect re-claims it.
    */
   async function withSerialReleased<T>(fn: () => Promise<T>): Promise<T> {
-    await runPaletteCommand("NodeMCU: Release Serial Port");
+    let released = false;
+    for (let attempt = 0; attempt < 3 && !released; attempt++) {
+      await runPaletteCommand("NodeMCU: Release Serial Port");
+      released = await waitForSerialPortAvailable();
+    }
+    expect(released, `serial port ${PORT} should be available after Release Serial Port`).toBe(true);
     try {
       return await fn();
     } finally {

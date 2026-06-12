@@ -4,7 +4,7 @@ import { Shell } from "../util/shell";
 import { ToolchainLocator, cmakeConfigureCommand, cmakeBuildCommand } from "./toolchain";
 import { writeUserModulesHeader, diffSelectedModules, readSelectedModules } from "./userModulesWriter";
 import { parseProblems, summarize } from "./outputParser";
-import { defaultBuildDir, userModulesHeader, binOutput } from "../util/paths";
+import { appModulesDir, defaultBuildDir, userModulesHeader, binOutput } from "../util/paths";
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import type { CompileProblem } from "./outputParser";
 import type { ToolchainInfo } from "./toolchain";
@@ -44,6 +44,7 @@ export class BuildManager {
     const after = readSelectedModules(headerPath);
     const diff = diffSelectedModules(before, after);
     const buildDir = defaultBuildDir(ctx.firmwarePath);
+    const modulesSrcDir = appModulesDir(ctx.firmwarePath);
     const buildDirMissing = !fs.existsSync(path.join(buildDir, "CMakeCache.txt"));
     const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0;
     if (needsReconfigure) {
