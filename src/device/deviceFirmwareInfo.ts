@@ -73,6 +73,17 @@ export async function readDeviceFirmwareInfo(opts: {
         finish(null);
         return;
       }
+      // finish() may already have run (timeout/abort) while the open was still
+      // in flight; it saw isOpen === false and skipped the close, so close here
+      // or the port stays locked for the life of the extension host.
+      if (settled) {
+        try {
+          sp!.close(() => undefined);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       // Pulse DTR/RTS to reset the board so it reprints its boot banner.
       try {
         sp!.set({ dtr: false, rts: true }, () => {

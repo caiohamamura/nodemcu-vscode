@@ -27,7 +27,7 @@ import * as os from "node:os";
 import * as child_process from "node:child_process";
 import { SerialPort } from "serialport";
 
-const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || "COM7";
+const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || (process.platform === "win32" ? "COM7" : "/dev/ttyUSB0");
 const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
 const DEBUG_PORT = Number(process.env.NODEMCU_VSCODE_E2E_CDP_PORT || "9240");
 const RUN_ID = `${process.pid}-${Date.now()}`;
@@ -204,6 +204,8 @@ async function readDeviceModules(timeoutMs = 20_000): Promise<{ modules: string[
   return { modules, lines };
 }
 
+let lastSerialOpenError = "";
+
 async function canOpenSerialPort(): Promise<boolean> {
   let sp: SerialPort | null = null;
   try {
@@ -211,7 +213,8 @@ async function canOpenSerialPort(): Promise<boolean> {
       const p = new SerialPort({ path: PORT, baudRate: BAUD_RATE }, (err) => (err ? reject(err) : resolve(p)));
     });
     return true;
-  } catch {
+  } catch (e) {
+    lastSerialOpenError = (e as Error).message;
     return false;
   } finally {
     if (sp?.isOpen) {
@@ -407,19 +410,34 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
 
   /** Click the active editor surface so keyboard input lands in Monaco. */
   async function focusActiveEditor(): Promise<void> {
-    const target = (await client.evaluate(`
-      (() => {
-        const group = Array.from(document.querySelectorAll('.editor-group-container')).find(g => g.classList.contains('active')) || document.querySelector('.editor-group-container');
-        const editor = (group || document).querySelector('.monaco-editor');
-        const surface = editor?.querySelector('.view-lines') || editor;
-        if (!surface) return null;
-        const r = surface.getBoundingClientRect();
-        return { x: r.left + Math.min(60, r.width / 3), y: r.top + Math.min(20, r.height / 3) };
-      })()
-    `)) as { x: number; y: number } | null;
-    if (!target) throw new Error("No active editor to focus");
-    await clickAt(target.x, target.y);
-    await sleep(250);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const target = (await client.evaluate(`
+        (() => {
+          const group = Array.from(document.querySelectorAll('.editor-group-container')).find(g => g.classList.contains('active')) || document.querySelector('.editor-group-container');
+          const editor = (group || document).querySelector('.monaco-editor');
+          const surface = editor?.querySelector('.view-lines') || editor;
+          if (!surface) return null;
+          const r = surface.getBoundingClientRect();
+          return { x: r.left + Math.min(60, r.width / 3), y: r.top + Math.min(20, r.height / 3) };
+        })()
+      `)) as { x: number; y: number } | null;
+      if (!target) throw new Error("No active editor to focus");
+      await clickAt(target.x, target.y);
+      await sleep(250);
+      // Verify focus actually landed inside the editor-group Monaco instance
+      // (the Chat sidebar also hosts a Monaco editor and can steal input).
+      const focused = await client.evaluate(`
+        (() => {
+          const group = Array.from(document.querySelectorAll('.editor-group-container')).find(g => g.classList.contains('active')) || document.querySelector('.editor-group-container');
+          const editor = (group || document).querySelector('.monaco-editor');
+          const ae = document.activeElement;
+          return !!(group && editor && ae && group.contains(ae) && editor.contains(ae));
+        })()
+      `);
+      if (focused) return;
+      await sleep(300);
+    }
+    throw new Error("Could not focus the active editor; focus kept landing elsewhere (chat/sidebar?)");
   }
 
   async function activeEditorText(): Promise<string> {
@@ -451,14 +469,28 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     await sleep(400);
   }
 
+  /** Close the secondary side bar (Chat) so it cannot steal keyboard focus. */
+  async function closeChatSidebarIfOpen(): Promise<void> {
+    const open = await client.evaluate(
+      `(() => { const b = document.querySelector('.part.auxiliarybar'); return !!(b && b.offsetWidth > 0); })()`,
+    );
+    if (open) {
+      await runPaletteCommand("View: Close Secondary Side Bar");
+      await sleep(300);
+    }
+  }
+
   /** Edit init.lua in the editor, save, and confirm the change reached disk. */
   async function editAndSaveInitLua(content: string): Promise<void> {
+    await closeChatSidebarIfOpen();
     await openFile("init.lua");
     await setEditorText(content);
     await clearToasts(); // drop stale toasts so waitForUpload sees only this op
     await saveEditor();
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 30; i++) {
       if (fs.existsSync(initLuaPath) && fs.readFileSync(initLuaPath, "utf-8").includes(content)) return;
+      // Save may have landed outside the editor; re-focus and retry periodically.
+      if (i % 8 === 7) await saveEditor();
       await sleep(300);
     }
     throw new Error(`init.lua on disk did not receive the edit. Disk: ${fs.existsSync(initLuaPath) ? fs.readFileSync(initLuaPath, "utf-8") : "(missing)"}`);
@@ -466,7 +498,7 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
 
   async function getToasts(): Promise<string[]> {
     return await client.evaluate(`
-      (() => Array.from(document.querySelectorAll('.notifications-toasts .notification-list-item-message, .notification-toast'))
+      (() => Array.from(document.querySelectorAll('.notifications-toasts .notification-list-item-message, .notifications-list-container .notification-list-item-message'))
         .map(e => (e.textContent || '').trim().replace(/\\s+/g, ' ')).filter(Boolean))()
     `);
   }
@@ -517,9 +549,14 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     let released = false;
     for (let attempt = 0; attempt < 3 && !released; attempt++) {
       await runPaletteCommand("NodeMCU: Release Serial Port");
+      // The release command fires an info toast; log whether it actually ran.
+      await sleep(500);
+      const toasts = (await getToasts()).join(" | ");
+      console.log(`[e2e] release attempt ${attempt}: toasts="${toasts}"`);
       released = await waitForSerialPortAvailable();
+      if (!released) console.log(`[e2e] port still unavailable: ${lastSerialOpenError}`);
     }
-    expect(released, `serial port ${PORT} should be available after Release Serial Port`).toBe(true);
+    expect(released, `serial port ${PORT} should be available after Release Serial Port (last open error: ${lastSerialOpenError})`).toBe(true);
     try {
       return await fn();
     } finally {
