@@ -194,9 +194,10 @@ async function focusAndConnectSerialConsole(options: { force?: boolean } = {}): 
 
 async function ensurePython(context: vscode.ExtensionContext): Promise<void> {
   if (pythonManager) return;
+  const configuredPython = vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath");
   pythonManager = new PythonManager({
     storagePath: context.globalStorageUri.fsPath,
-    systemPython: vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") ?? undefined,
+    systemPython: configuredPython === "python" ? undefined : (configuredPython ?? undefined),
     onProgress: (msg) => outputChannel?.appendLine(`[python] ${msg}`),
   });
   try {
@@ -923,6 +924,7 @@ async function ensureKnownDevice(cfg: NodemcuConfig, port: string, signal?: Abor
     async () => await readDeviceIdentity({ shell: new Shell(), python, port, baud: getConfiguredBaud(cfg), signal }),
   );
   if (!result.success || !result.identity) {
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] readDeviceIdentity failed: ${result.error}`);
     vscode.window.showErrorMessage(`Unable to identify attached NodeMCU device: ${result.error}`);
     return { allowed: false, isNew: false };
   }

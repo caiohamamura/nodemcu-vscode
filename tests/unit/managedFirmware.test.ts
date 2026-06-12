@@ -71,7 +71,6 @@ describe("ensureManagedFirmware", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(root, ".nodemcu-vscode-managed-firmware.json"))).toBe(true);
     expect(fs.readFileSync(path.join(root, "app", "CMakeLists.txt"), "utf-8")).toContain("nodemcu-vscode-newlib.c");
-    expect(fs.readFileSync(path.join(root, "tools", "luac_cross", "CMakeLists.txt"), "utf-8")).toContain("nodemcu-vscode-luac-assert.c");
   });
 
   it("triggers redownload if u8g2 submodule is missing", async () => {

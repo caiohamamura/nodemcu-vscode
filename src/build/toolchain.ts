@@ -61,6 +61,7 @@ export class ToolchainLocator {
 
 export function cmakeConfigureCommand(opts: {
   cmake?: string;
+  ninja?: string;
   firmwarePath: string;
   buildDir: string;
   generator: ToolchainInfo["generator"];
@@ -75,6 +76,9 @@ export function cmakeConfigureCommand(opts: {
     "-G", opts.generator,
     `-DLUA=${opts.luaVersion}`,
   ];
+  if (opts.generator === "Ninja" && opts.ninja) {
+    args.push(`-DCMAKE_MAKE_PROGRAM=${opts.ninja}`);
+  }
   if (opts.luaNumberIntegral) args.push("-DLUA_NUMBER_INTEGRAL=ON");
   if (opts.luaNumber64bits) args.push("-DLUA_NUMBER_64BITS=ON");
   if (opts.verbose) args.push("-DCMAKE_VERBOSE_MAKEFILE=ON");

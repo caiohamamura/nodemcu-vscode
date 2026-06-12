@@ -37,8 +37,12 @@ const EXTENSIONS_DIR = path.join(os.tmpdir(), `nodemcu-vscode-e2e-ext-${RUN_ID}`
 
 const CODE_CMD =
   process.env.VSCODE_E2E_EXECUTABLE ||
-  path.join(process.env.LOCALAPPDATA || "", "Programs", "Microsoft VS Code", "bin", "code.cmd");
+  (process.platform === "win32"
+    ? path.join(process.env.LOCALAPPDATA || "", "Programs", "Microsoft VS Code", "bin", "code.cmd")
+    : "/usr/bin/code");
 const hasCode = fs.existsSync(CODE_CMD);
+const DEFAULT_DISPLAY =
+  process.platform === "linux" && !process.env.DISPLAY && fs.existsSync("/tmp/.X11-unix/X99") ? ":99" : process.env.DISPLAY;
 
 const describe_ = process.env.NODEMCU_VSCODE_E2E_HARDWARE === "1" && hasCode ? describe : describe.skip;
 
@@ -51,7 +55,24 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * makes the next run connect to the stale window. Match on the unique marker.
  */
 function killEdhByMarker(marker: string): void {
-  if (process.platform !== "win32") return;
+  if (process.platform !== "win32") {
+    const result = child_process.spawnSync("ps", ["-eo", "pid=,command="], { encoding: "utf-8" });
+    if (result.error || !result.stdout) return;
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const command = match[2];
+      if (!Number.isFinite(pid) || pid === process.pid || pid === process.ppid) continue;
+      if (!command.includes(marker)) continue;
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    return;
+  }
   child_process.spawnSync(
     "powershell",
     [
@@ -64,13 +85,17 @@ function killEdhByMarker(marker: string): void {
 }
 
 async function getDebuggerUrl(): Promise<string> {
+  const workspaceMarker = path.basename(WORKSPACE_DIR);
   for (let i = 0; i < 60; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json`);
       if (res.ok) {
         const targets = (await res.json()) as any[];
         const target = targets.find(
-          (t) => t.type === "page" && (t.title?.includes("[Extension Development Host]") || t.title?.includes("nodemcu")),
+          (t) =>
+            t.type === "page" &&
+            t.title?.includes(workspaceMarker) &&
+            (t.title?.includes("[Extension Development Host]") || t.title?.includes("nodemcu")),
         );
         if (target) return target.webSocketDebuggerUrl;
       }
@@ -222,6 +247,7 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
         shell: true,
         env: {
           ...process.env,
+          ...(DEFAULT_DISPLAY ? { DISPLAY: DEFAULT_DISPLAY } : {}),
           NODEMCU_VSCODE_STORAGE_ROOT: process.env.NODEMCU_VSCODE_STORAGE_ROOT || path.join(os.homedir(), ".nodemcu-vscode"),
         },
       },
@@ -478,7 +504,7 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
         lastJoined = joined;
       }
       if (/uploading|syncing|formatting|removing|building|flashing/i.test(joined)) sawActive = true;
-      if (/FAILED|failed to/i.test(joined)) throw new Error(`Upload failed. Toasts: ${history.join(" || ")}`);
+      if (/FAILED|failed to|Unable to|aborted/i.test(joined)) throw new Error(`Upload failed. Toasts: ${history.join(" || ")}`);
       // Require having seen the new operation's active phase before accepting a
       // success toast, so a lingering success toast can't satisfy us early.
       if (sawActive && /(synced \d+ operation|uploaded )/i.test(joined)) return history.join(" || ");
@@ -511,23 +537,9 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     for (let i = 0; i < 15 && !portPattern.test(readIni()); i++) await sleep(1000);
     expect(readIni()).toMatch(portPattern);
 
-    // Initialize kicks off the first full sync immediately (claim + format +
-    // mirror, possibly preceded by a firmware build + flash when the attached
-    // device's firmware doesn't match the default module set). Later scenarios
-    // assume a quiescent extension — toasts they wait on must be their own and
-    // the serial port must be releasable — so block here until that initial
-    // sync writes [sync] last_timestamp. Whitespace must be same-line ([ \t]):
-    // \s would cross the newline of an empty `last_timestamp=` and match the
-    // next section's text.
     const timestampPattern = /^last_timestamp[ \t]*=[ \t]*\S/im;
-    const deadline = Date.now() + 720_000;
-    while (Date.now() < deadline && !timestampPattern.test(readIni())) {
-      await clickProceedIfPresent();
-      await sleep(2000);
-    }
-    expect(timestampPattern.test(readIni()), `initial sync wrote last_timestamp. ini: ${readIni()}`).toBe(true);
-    await clearToasts();
-  }, 900_000);
+    expect(timestampPattern.test(readIni()), "initialize should not sync automatically. ini: " + readIni()).toBe(false);
+  }, 60_000);
 
   it("2. selects and clears a C module and a Lua module (ini + checkbox round-trip)", async () => {
     await focusNodeMcuSidebar();
@@ -553,14 +565,15 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
   it("3. edits init.lua, uploads on save, and the new file runs on the device", async () => {
     const marker = `HELLO_E2E_${RUN_ID.replace(/[^a-zA-Z0-9]/g, "")}`;
     await editAndSaveInitLua(`print("${marker}")`);
-    // Scenario 1 already completed the initial claim/format sync, so this save
-    // takes the fast single-file upload path.
-    const result = await waitForUpload(120_000);
+    // Initialization only creates the project. The first save owns the initial
+    // full mirror (and any required build/flash), so give it the hardware
+    // path timeout rather than the later fast single-file timeout.
+    const result = await waitForUpload(900_000);
     expect(result).toMatch(/synced \d+ operation|uploaded/i);
 
     const { found, lines } = await withSerialReleased(() => readDeviceSerial(marker, 15_000));
     expect(found, `device serial should print ${marker}. Lines: ${lines.slice(-8).join(" / ")}`).toBe(true);
-  }, 180_000);
+  }, 960_000);
 
   it("4. enabling the coap C module rebuilds/flashes and the boot banner lists it", async () => {
     await focusNodeMcuSidebar();

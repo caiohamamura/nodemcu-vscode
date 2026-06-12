@@ -193,25 +193,6 @@ void *_realloc_r(struct _reent *reent, void *ptr, size_t size)
     await fsp.writeFile(cmakePath, cmake.replace(before, after), "utf-8");
   }
 
-  const assertCompatPath = path.join(firmwareRoot, LUAC_ASSERT_COMPAT_SOURCE);
-  await fsp.writeFile(assertCompatPath, `#include <stdio.h>
-#include <stdlib.h>
-
-void luaL_assertfail(const char *file, int line, const char *message)
-{
-  fprintf(stderr, "lua assertion failed: %s:%d: %s\\n", file, line, message);
-  abort();
-}
-`, "utf-8");
-
-  const luacCmakePath = path.join(firmwareRoot, "tools", "luac_cross", "CMakeLists.txt");
-  const luacCmake = await fsp.readFile(luacCmakePath, "utf-8");
-  const sourceNeedle = "${APP_DIR}/modules/pixbuf.c";
-  const sourceReplacement = `${sourceNeedle}\n    nodemcu-vscode-luac-assert.c`;
-  if (!luacCmake.includes("nodemcu-vscode-luac-assert.c")) {
-    await fsp.writeFile(luacCmakePath, luacCmake.replace(sourceNeedle, sourceReplacement), "utf-8");
-  }
-
   const rootCmakePath = path.join(firmwareRoot, "CMakeLists.txt");
   if (fs.existsSync(rootCmakePath)) {
     const rootCmake = await fsp.readFile(rootCmakePath, "utf-8");
