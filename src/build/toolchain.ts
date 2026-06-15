@@ -62,6 +62,7 @@ export class ToolchainLocator {
 export function cmakeConfigureCommand(opts: {
   cmake?: string;
   ninja?: string;
+  python?: string;
   firmwarePath: string;
   buildDir: string;
   generator: ToolchainInfo["generator"];
@@ -78,6 +79,13 @@ export function cmakeConfigureCommand(opts: {
   ];
   if (opts.generator === "Ninja" && opts.ninja) {
     args.push(`-DCMAKE_MAKE_PROGRAM=${opts.ninja}`);
+  }
+  // The firmware does `find_package(Python3 ... REQUIRED)`. CMake's own
+  // interpreter search is unreliable across machines (it misses newer Python
+  // versions and trips over the Windows Store `python3` alias), so pin the
+  // interpreter we already resolved instead of leaving it to chance.
+  if (opts.python) {
+    args.push(`-DPython3_EXECUTABLE=${opts.python}`);
   }
   if (opts.luaNumberIntegral) args.push("-DLUA_NUMBER_INTEGRAL=ON");
   if (opts.luaNumber64bits) args.push("-DLUA_NUMBER_64BITS=ON");

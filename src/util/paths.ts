@@ -49,3 +49,46 @@ export function isOptionalCModule(firmwarePath: string, name: string): boolean {
   const candidate = path.join(firmwarePath, "app", name);
   return fs.existsSync(path.join(candidate, "CMakeLists.txt"));
 }
+
+/**
+ * Bin directories of the bundled cross toolchain(s) under
+ * `<firmwarePath>/tools/toolchains/`. The firmware downloads e.g.
+ * `esp8266-xtensa-lx106-elf-win32-.../` with both a top-level `bin/`
+ * (prefixed tools like `xtensa-lx106-elf-as`) and a `<target>/bin/` (bare
+ * `as`, `ld`, ... which gcc spawns by short name). These must be on PATH for
+ * the compile, otherwise gcc fails with "CreateProcess: No such file or
+ * directory" when it cannot launch its assembler. Returns existing dirs only;
+ * empty before the toolchain has been fetched.
+ */
+export function toolchainBinDirs(firmwarePath: string): string[] {
+  const root = path.join(firmwarePath, "tools", "toolchains");
+  const dirs: string[] = [];
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(root);
+  } catch {
+    return dirs;
+  }
+  for (const entry of entries) {
+    const base = path.join(root, entry);
+    try {
+      if (!fs.statSync(base).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const topBin = path.join(base, "bin");
+    if (fs.existsSync(topBin)) dirs.push(topBin);
+    // The bare-named assembler/linker live one level deeper in <target>/bin.
+    let sub: string[] = [];
+    try {
+      sub = fs.readdirSync(base);
+    } catch {
+      sub = [];
+    }
+    for (const s of sub) {
+      const subBin = path.join(base, s, "bin");
+      if (subBin !== topBin && fs.existsSync(subBin)) dirs.push(subBin);
+    }
+  }
+  return dirs;
+}

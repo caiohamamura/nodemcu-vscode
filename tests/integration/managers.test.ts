@@ -40,8 +40,12 @@ describe("BuildManager (integration, mocked shell)", () => {
     fs.mkdirSync(path.join(fwPath, "cmake"), { recursive: true });
     fs.writeFileSync(path.join(fwPath, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.24)\nproject(fake)\n");
     // Simulate a previously completed build so incremental-build tests see no missing build dir.
+    // A finished configure leaves both the cache AND the generator build file
+    // (build.ninja); writing only the cache would mimic a half-failed configure,
+    // which BuildManager intentionally treats as needing reconfigure.
     fs.mkdirSync(path.join(fwPath, "build"), { recursive: true });
     fs.writeFileSync(path.join(fwPath, "build", "CMakeCache.txt"), "# fake cache\n");
+    fs.writeFileSync(path.join(fwPath, "build", "build.ninja"), "# fake ninja\n");
     const cfg = defaultConfig();
     cfg.c_modules = { wifi: true };
     writeUserModulesHeader(path.join(fwPath, "app", "include", "user_modules.h"), cfg);
@@ -95,6 +99,53 @@ describe("BuildManager (integration, mocked shell)", () => {
     const cmakeCalls = shell.calls.filter((c) => c.command === "cmake");
     expect(cmakeCalls).toHaveLength(1);
     expect(cmakeCalls[0].args).toContain("--build");
+  });
+
+  it("reconfigures when the cache exists but the generator build file is missing (half-failed configure)", async () => {
+    // A configure that wrote CMakeCache.txt but died before generating
+    // build.ninja must not be mistaken for a finished build, or `cmake --build`
+    // dies with "cannot find build.ninja".
+    fs.rmSync(path.join(fwPath, "build", "build.ninja"), { force: true });
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 0, stdout: "Configuring\n" });
+    shell.nextResponse({ exitCode: 0, stdout: "Building\n" });
+    const cfg = defaultConfig();
+    cfg.c_modules = { wifi: true };
+    const r = await new BuildManager(shell as unknown as Shell).build({
+      firmwarePath: fwPath,
+      config: cfg,
+      parallel: true,
+      jobCount: 4,
+      verbose: false,
+      generator: "Ninja",
+      onLog: () => { },
+      onStderr: () => { },
+    });
+    expect(r.needsReconfigure).toBe(true);
+    const cmakeCalls = shell.calls.filter((c) => c.command === "cmake");
+    expect(cmakeCalls).toHaveLength(2);
+    expect(cmakeCalls[0].args).toContain("-S");
+  });
+
+  it("forwards the resolved Python interpreter to cmake configure", async () => {
+    const shell = new FakeShell();
+    shell.nextResponse({ exitCode: 0, stdout: "Configuring\n" });
+    shell.nextResponse({ exitCode: 0, stdout: "Building\n" });
+    const cfg = defaultConfig();
+    cfg.c_modules = { mqtt: true }; // force reconfigure
+    await new BuildManager(shell as unknown as Shell).build({
+      firmwarePath: fwPath,
+      config: cfg,
+      parallel: true,
+      jobCount: 4,
+      verbose: false,
+      generator: "Ninja",
+      python: "/opt/py/python3",
+      onLog: () => { },
+      onStderr: () => { },
+    });
+    const configureCall = shell.calls.find((c) => c.command === "cmake" && c.args.includes("-S"));
+    expect(configureCall?.args).toContain("-DPython3_EXECUTABLE=/opt/py/python3");
   });
 
   it("returns failure with parsed problems on cmake error", async () => {

@@ -666,6 +666,7 @@ async function doBuild(signal?: AbortSignal): Promise<void> {
     signal,
     preferredCmake: tools.cmake,
     preferredNinja: tools.ninja,
+    python: toolchain.python,
   });
   if (result.success) {
     setStatus("success", "build OK", result.summary);

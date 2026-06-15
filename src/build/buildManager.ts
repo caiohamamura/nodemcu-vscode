@@ -4,7 +4,7 @@ import { Shell } from "../util/shell";
 import { ToolchainLocator, cmakeConfigureCommand, cmakeBuildCommand } from "./toolchain";
 import { writeUserModulesHeader, diffSelectedModules, readSelectedModules } from "./userModulesWriter";
 import { parseProblems, summarize } from "./outputParser";
-import { appModulesDir, defaultBuildDir, userModulesHeader, binOutput } from "../util/paths";
+import { appModulesDir, defaultBuildDir, userModulesHeader, binOutput, toolchainBinDirs } from "../util/paths";
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import type { CompileProblem } from "./outputParser";
 import type { ToolchainInfo } from "./toolchain";
@@ -21,6 +21,7 @@ export interface BuildContext {
   signal?: AbortSignal;
   preferredCmake?: string;
   preferredNinja?: string;
+  python?: string;
 }
 
 export interface BuildResult {
@@ -45,7 +46,18 @@ export class BuildManager {
     const diff = diffSelectedModules(before, after);
     const buildDir = defaultBuildDir(ctx.firmwarePath);
     const modulesSrcDir = appModulesDir(ctx.firmwarePath);
-    const buildDirMissing = !fs.existsSync(path.join(buildDir, "CMakeCache.txt"));
+    // A build dir counts as "configured" only if CMake finished the generate
+    // phase. CMakeCache.txt is written early during configure, but the
+    // generator's build file (build.ninja / Makefile) is written last. An
+    // interrupted or failed first configure leaves the cache without the build
+    // file; trusting the cache alone makes every later build skip reconfigure
+    // and then die in `cmake --build` with "cannot find build.ninja". Require
+    // both so a failed configure is retried instead of permanently wedging.
+    const cacheExists = fs.existsSync(path.join(buildDir, "CMakeCache.txt"));
+    const generatorFileExists =
+      fs.existsSync(path.join(buildDir, "build.ninja")) ||
+      fs.existsSync(path.join(buildDir, "Makefile"));
+    const buildDirMissing = !cacheExists || !generatorFileExists;
     const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0;
     if (needsReconfigure) {
       // The firmware is a CMake superbuild: the real compile runs inside an
@@ -106,11 +118,13 @@ export class BuildManager {
     let generator: ToolchainInfo["generator"] = ctx.generator;
     let cmake = ctx.preferredCmake || "cmake";
     let ninja = ctx.preferredNinja;
+    let python = ctx.python;
     if (generator === "Unknown") {
-      const toolchain = await new ToolchainLocator(this.shell, undefined, ctx.preferredCmake, ctx.preferredNinja).locate();
+      const toolchain = await new ToolchainLocator(this.shell, ctx.python, ctx.preferredCmake, ctx.preferredNinja).locate();
       generator = toolchain.generator;
       cmake = toolchain.cmake;
       ninja = toolchain.ninja;
+      python = python || toolchain.python;
     }
 
     const env = { ...process.env };
@@ -121,6 +135,7 @@ export class BuildManager {
       const configureCmd = cmakeConfigureCommand({
         cmake,
         ninja,
+        python,
         firmwarePath: ctx.firmwarePath,
         buildDir,
         generator,
@@ -151,6 +166,18 @@ export class BuildManager {
       }
     }
 
+    // The bundled gcc spawns its assembler/linker ("as", "ld", ...) by bare
+    // name during the compile, so the toolchain bin dirs must be on PATH or the
+    // build dies with "gcc: error: CreateProcess: No such file or directory".
+    // gcc's own relocatable search does not reliably find them on a clean
+    // machine. The toolchain is fetched during configure, so glob for it now
+    // (works on a first-ever run too) and prepend before building.
+    const buildEnv = { ...env };
+    const tcDirs = toolchainBinDirs(ctx.firmwarePath);
+    if (tcDirs.length) {
+      buildEnv.PATH = `${tcDirs.join(path.delimiter)}${path.delimiter}${buildEnv.PATH || ""}`;
+    }
+
     const buildCmd = cmakeBuildCommand({
       cmake,
       buildDir,
@@ -160,7 +187,7 @@ export class BuildManager {
     });
     const buildResult = await this.shell.run(buildCmd.command, buildCmd.args, {
       cwd: buildCmd.cwd,
-      env,
+      env: buildEnv,
       onStdout: ctx.onLog,
       onStderr: ctx.onStderr,
       signal: ctx.signal,

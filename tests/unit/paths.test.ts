@@ -12,6 +12,7 @@ import {
   binOutput,
   cModuleNameFromFile,
   isOptionalCModule,
+  toolchainBinDirs,
 } from "../../src/util/paths";
 
 describe("path utilities", () => {
@@ -43,7 +44,15 @@ describe("path utilities", () => {
     });
 
     it("throws if path is missing CMakeLists.txt", () => {
-      expect(() => resolveFirmwarePath("/anywhere", "/tmp")).toThrow(/CMakeLists\.txt/);
+      // Use a real existing directory without CMakeLists.txt so the check under
+      // test is reached (a hardcoded "/tmp" does not exist for Node on Windows
+      // and trips the earlier does-not-exist guard instead).
+      const empty = fs.mkdtempSync(path.join(os.tmpdir(), "nodemcu-paths-empty-"));
+      try {
+        expect(() => resolveFirmwarePath("/anywhere", empty)).toThrow(/CMakeLists\.txt/);
+      } finally {
+        fs.rmSync(empty, { recursive: true, force: true });
+      }
     });
   });
 
@@ -87,6 +96,31 @@ describe("path utilities", () => {
 
     it("returns false when subdir does not exist", () => {
       expect(isOptionalCModule(tmpFw, "nonexistent")).toBe(false);
+    });
+  });
+
+  describe("toolchainBinDirs", () => {
+    it("returns [] when no toolchains dir exists", () => {
+      expect(toolchainBinDirs(tmpFw)).toEqual([]);
+    });
+
+    it("collects top-level bin and nested <target>/bin (where bare 'as' lives)", () => {
+      const tc = path.join(tmpFw, "tools", "toolchains", "esp8266-xtensa-lx106-elf-1.22.0");
+      const topBin = path.join(tc, "bin");
+      const targetBin = path.join(tc, "xtensa-lx106-elf", "bin");
+      fs.mkdirSync(topBin, { recursive: true });
+      fs.mkdirSync(targetBin, { recursive: true });
+      const dirs = toolchainBinDirs(tmpFw);
+      expect(dirs).toContain(topBin);
+      expect(dirs).toContain(targetBin);
+    });
+
+    it("skips loose files and toolchains without a bin dir", () => {
+      const root = path.join(tmpFw, "tools", "toolchains");
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(path.join(root, "esptool.py"), "# not a dir\n");
+      fs.mkdirSync(path.join(root, "ninja"), { recursive: true }); // dir, but no bin/
+      expect(toolchainBinDirs(tmpFw)).toEqual([]);
     });
   });
 });
