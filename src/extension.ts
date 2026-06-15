@@ -155,6 +155,30 @@ function getPythonPath(): string {
   return vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("pythonPath") || "python";
 }
 
+/**
+ * Like getPythonPath, but waits for the managed venv to finish setting up
+ * first. The venv is created asynchronously on activation (download managed
+ * Python, create venv, pip install esptool/pyserial — minutes on a clean
+ * machine). A build triggered before it finishes would see `pythonManager.python`
+ * still empty and fall back to the literal "python", which CMake cannot resolve
+ * as `Python3_EXECUTABLE` and reports as "Could NOT find Python3". Waiting here
+ * means the first build gets a real interpreter path instead of failing until a
+ * later retry happens to land after setup completed.
+ */
+async function getReadyPythonPath(): Promise<string> {
+  if (!pythonManager && extensionContext) {
+    await ensurePython(extensionContext);
+  } else if (pythonManager) {
+    try {
+      await pythonManager.pythonPromise;
+    } catch {
+      // Setup failed and cleared the manager; getPythonPath falls back to the
+      // configured/system interpreter below.
+    }
+  }
+  return getPythonPath();
+}
+
 function getConfiguredBaud(cfg: NodemcuConfig | null | undefined): number {
   return cfg?.nodemcu.baud && cfg.nodemcu.baud > 0 ? cfg.nodemcu.baud : 115200;
 }
@@ -651,7 +675,7 @@ async function doBuild(signal?: AbortSignal): Promise<void> {
   }
   setStatus("configuring", "configuring...");
   const tools = await resolveManagedTools();
-  const toolchain = await new ToolchainLocator(new Shell(), getPythonPath(), tools.cmake, tools.ninja).locate();
+  const toolchain = await new ToolchainLocator(new Shell(), await getReadyPythonPath(), tools.cmake, tools.ninja).locate();
   setStatus("building", "building...");
   const mgr = new BuildManager(new Shell());
   const result = await mgr.build({
