@@ -305,7 +305,7 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
 
 ### 5.3 Managed firmware
 
-- URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/luac_cross_optional.zip`
+- URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/v3.1.0.zip`
 - Tag: `mbedtls-2.28.10-beta` (constant in `src/firmware/managedFirmware.ts`).
 - Storage: `context.globalStorageUri/fsPath/firmware/<tag>/`.
 - Marker file: `.nodemcu-vscode-managed-firmware.json` (presence + validity of
