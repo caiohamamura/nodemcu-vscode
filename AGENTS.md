@@ -390,7 +390,20 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
   Lua completion helper coverage.
 - `tests/integration/*.test.ts` — fakes `Shell` to drive
   `BuildManager` / `FlashManager` / `NodemcuTool`; uses `tests/fixtures/fake-firmware/`.
-- `tests/e2e/*.test.ts` (4 files) — run only when prerequisites are met.
+- `tests/e2e/*.test.ts` — run only when prerequisites are met (skipped otherwise,
+  so `npm test` stays green):
+  - `device_cdp_e2e.test.ts` — CDP-driven full UI flow against a real ESP8266
+    (`NODEMCU_VSCODE_E2E_HARDWARE=1` + VS Code CLI).
+  - `tls_buffer_size_e2e.test.ts` — CDP-free; builds+flashes per `[build]
+    ssl_buffer_size` with `tls` enabled, runs the upstream `scratch_https.lua`
+    (`http.get`) and `scratch_https3.lua` (`http.get_stream`) HTTPS scripts on the
+    device, and asserts a too-small buffer fails every TLS handshake while 16384
+    succeeds. Needs `NODEMCU_VSCODE_E2E_HARDWARE=1` and `NODEMCU_VSCODE_E2E_WIFI_SSID`
+    (+ optional `_WIFI_PASS`); no credentials are hardcoded. Sizes via
+    `NODEMCU_VSCODE_E2E_SSL_SIZES` (default `1024,16384`). Verified on a real
+    ESP8266: `1024` → 0/10 TLS successes, `16384` → TLS succeeds. The firmware
+    build self-downloads its xtensa toolchain; a fresh flash formats SPIFFS on
+    first boot, so the script upload waits + retries.
 
 ### 7.2 vitest config
 
