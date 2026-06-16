@@ -342,12 +342,26 @@ export class SerialConsoleViewProvider implements vscode.WebviewViewProvider, vs
       return hasPort && (state === "open" || state === "ready");
     }
 
+    // Disabling a focused element drops its focus, and re-enabling does not
+    // restore it. Sending a command briefly disables the input (busy state)
+    // and re-enables it once ready, which loses focus across the two updates.
+    // Track the focus intent so we can restore it when the input comes back.
+    let keepInputFocused = false;
+
     function updateInputState(state, hasPort) {
       const canSend = canSendForState(state, hasPort);
+      // Capture focus before toggling "disabled", which would blur the element.
+      if (document.activeElement === input) {
+        keepInputFocused = true;
+      }
       input.disabled = !canSend;
       sendButton.disabled = !canSend;
       resetButton.disabled = !hasPort || state === "busy" || state === "opening" || state === "booting" || state === "released-for-flash";
       input.placeholder = canSend ? "print(node.heap())" : "Serial operation in progress";
+      if (canSend && keepInputFocused && document.activeElement !== input) {
+        input.focus();
+        keepInputFocused = false;
+      }
     }
 
     function appendText(text, timestamp) {
