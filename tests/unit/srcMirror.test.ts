@@ -171,4 +171,57 @@ describe("src mirror planning", () => {
     });
     expect(plan.upload).toHaveLength(0);
   });
+
+  it("changedOnly skips files whose content hash is unchanged even if mtime moved", () => {
+    const initPath = path.join(tmp, "init.lua");
+    const wifiPath = path.join(tmp, "lib", "wifi.lua");
+    // Both files match their stored hash. mtimes are deliberately stale (0), so a
+    // pure-mtime plan would re-upload both. Hash-aware planning must not.
+    const hashFile = (p: string): string => `hash:${p}`;
+    const uploadHashes = {
+      [initPath]: hashFile(initPath),
+      [wifiPath]: hashFile(wifiPath),
+    };
+    const plan = planMirrorSync({
+      srcDir: tmp,
+      remoteFiles: [],
+      uploadTimestamps: { [initPath]: 0, [wifiPath]: 0 },
+      uploadHashes,
+      hashFile,
+      changedOnly: true,
+    });
+    expect(plan.upload).toHaveLength(0);
+  });
+
+  it("changedOnly uploads a file whose content hash differs", () => {
+    const initPath = path.join(tmp, "init.lua");
+    const wifiPath = path.join(tmp, "lib", "wifi.lua");
+    const hashFile = (p: string): string => `hash:${p}`;
+    const plan = planMirrorSync({
+      srcDir: tmp,
+      remoteFiles: [],
+      // init.lua has a stale stored hash; wifi.lua matches.
+      uploadHashes: { [initPath]: "stale", [wifiPath]: hashFile(wifiPath) },
+      hashFile,
+      changedOnly: true,
+    });
+    expect(plan.upload.map((file) => file.remoteName)).toEqual(["init.lua"]);
+  });
+
+  it("changedOnly falls back to mtime when the hash function returns null", () => {
+    const initPath = path.join(tmp, "init.lua");
+    const wifiPath = path.join(tmp, "lib", "wifi.lua");
+    const plan = planMirrorSync({
+      srcDir: tmp,
+      remoteFiles: [],
+      uploadTimestamps: {
+        [initPath]: fs.statSync(initPath).mtimeMs,
+        [wifiPath]: 0,
+      },
+      uploadHashes: {},
+      hashFile: () => null,
+      changedOnly: true,
+    });
+    expect(plan.upload.map((file) => file.remoteName)).toEqual(["lib/wifi.lua"]);
+  });
 });

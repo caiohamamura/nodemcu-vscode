@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
+import * as crypto from "node:crypto";
 import { Shell } from "./util/shell";
 import { CommandQueue } from "./util/commandQueue";
 import {
@@ -1000,6 +1001,30 @@ function isUriUnderSrc(uri: vscode.Uri, cfg: NodemcuConfig): boolean {
   return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
+// Content-hash tracking so we only upload a file when its bytes actually
+// changed. VS Code's onDidSaveTextDocument (and the file watcher) fire on every
+// Ctrl+S — including no-op saves, which still rewrite the file and bump its
+// mtime. A sha1 of the contents is the only reliable "did this actually change"
+// signal. Keyed by absolute local path, persisted per-workspace.
+const UPLOAD_HASHES_KEY = "nodemcu.uploadHashes";
+
+function fileContentHash(filePath: string): string | null {
+  try {
+    return crypto.createHash("sha1").update(fs.readFileSync(filePath)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function getUploadHashes(): Record<string, string> {
+  return extensionContext?.workspaceState.get<Record<string, string>>(UPLOAD_HASHES_KEY) ?? {};
+}
+
+async function saveUploadHashes(hashes: Record<string, string>): Promise<void> {
+  if (!extensionContext) return;
+  await extensionContext.workspaceState.update(UPLOAD_HASHES_KEY, hashes);
+}
+
 /**
  * Decide whether the firmware needs a rebuild+flash for the selected C modules,
  * logging exactly what is going on (issue: the first sync used to silently show
@@ -1152,10 +1177,13 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
   const uploadTimestamps = extensionContext
     ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
     : {};
+  const uploadHashes = getUploadHashes();
   const plan = planMirrorSync({
     srcDir,
     remoteFiles: remote.files ?? [],
     uploadTimestamps,
+    uploadHashes,
+    hashFile: fileContentHash,
     changedOnly: opts.changedOnly && !opts.forceFormat && !identity.isNew,
   });
 
@@ -1184,14 +1212,24 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     if (uploaded.success) {
       successCount++;
       uploadTimestamps[file.localPath] = fs.statSync(file.localPath).mtimeMs;
+      const hash = fileContentHash(file.localPath);
+      if (hash) uploadHashes[file.localPath] = hash;
       continue;
     }
     failCount++;
     outputChannel.appendLine(`Failed to upload ${file.remoteName}: ${uploaded.error}`);
   }
 
+  // A removed remote file has no local content to track anymore.
+  for (const remoteName of plan.remove) {
+    const localPath = path.join(srcDir, remoteName);
+    delete uploadHashes[localPath];
+    delete uploadTimestamps[localPath];
+  }
+
   if (extensionContext) {
     await extensionContext.workspaceState.update("nodemcu.uploadTimestamps", uploadTimestamps);
+    await saveUploadHashes(uploadHashes);
   }
 
   if (fw) {
@@ -1317,9 +1355,12 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
   if (fw) {
     const headerPath = userModulesHeader(fw);
     if (isCModulesConfigChanged(headerPath, cfg)) {
-      outputChannel.appendLine("C modules changed — rebuilding and flashing before upload...");
-      await buildAndFlashForSync(signal);
-      if (statusEmitter.getState() !== "success") return;
+      // Reflashing firmware wipes the device filesystem, so a single-file upload
+      // would leave every other src/ file (and Lua module) missing. Fall back to
+      // a full mirror, which rebuilds+flashes and then re-uploads all of src/.
+      outputChannel.appendLine("C modules changed — reflashing and re-mirroring full src/ (device filesystem is wiped on flash)...");
+      await mirrorSrcToDevice({ changedOnly: false, signal });
+      return;
     }
   }
 
@@ -1339,6 +1380,12 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
     return;
   }
   outputChannel.appendLine(`Uploaded ${remoteName}`);
+  const uploadedHash = fileContentHash(uri.fsPath);
+  if (uploadedHash) {
+    const hashes = getUploadHashes();
+    hashes[uri.fsPath] = uploadedHash;
+    await saveUploadHashes(hashes);
+  }
 
   if (fw) {
     const mod = await reconcileLuaModulesOnDevice(toolOpts, cfg, fw);
@@ -1380,6 +1427,11 @@ async function handleFileDelete(event: vscode.FileDeleteEvent): Promise<void> {
       setStatus("uploading", `removing ${remoteName}...`);
       const result = await removeWithFallback(toolOpts, remoteName);
       if (result.success) {
+        const hashes = getUploadHashes();
+        if (uri.fsPath in hashes) {
+          delete hashes[uri.fsPath];
+          await saveUploadHashes(hashes);
+        }
         updateSyncTimestamp();
         outputChannel.appendLine(`Removed ${remoteName}`);
       } else {
@@ -1811,6 +1863,13 @@ function scheduleSrcSyncUri(uri: vscode.Uri): void {
       vscode.window.showErrorMessage(`NodeMCU: ${what} failed: ${err instanceof Error ? err.message : err}`);
     };
     if (currentCfg.sync.last_timestamp) {
+      // Skip no-op saves: Ctrl+S with no edits still fires this handler, but the
+      // bytes are identical to what we last uploaded, so there is nothing to do.
+      const hash = fileContentHash(uri.fsPath);
+      if (hash && getUploadHashes()[uri.fsPath] === hash) {
+        outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved but contents unchanged — skipping upload.`);
+        return;
+      }
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] File saved, uploading single file...`);
       commandQueue.enqueue("Upload file", (signal) => doUploadSingleFile(uri, currentCfg, signal)).catch(surfaceError("upload"));
     } else {
@@ -1876,7 +1935,18 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: cModulesProvider,
     manageCheckboxStateManually: true,
   });
-  const srcFileWatcher = vscode.workspace.createFileSystemWatcher("**/*");
+  // Scope the watcher to the configured src/ directory so the sync only reacts
+  // to src/ changes — not to churn in node_modules/, .git/, build output, etc.
+  // (onDidSaveTextDocument and the change handlers still defend with
+  // isUriUnderSrc, but a scoped watcher avoids waking up for unrelated files.)
+  const srcWatchRoot = getWorkspaceRoot();
+  const srcSetting =
+    vscode.workspace.getConfiguration("nodemcu-vscode").get<string>("src") ||
+    getConfigOrNull()?.nodemcu.src ||
+    "src";
+  const srcFileWatcher = srcWatchRoot
+    ? vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(srcWatchRoot, `${srcSetting}/**`))
+    : vscode.workspace.createFileSystemWatcher("**/*");
   context.subscriptions.push(
     luaTreeView,
     cTreeView,

@@ -489,6 +489,25 @@ Key entry points in `src/extension.ts`:
 - `updateSyncTimestamp` (line ~825): writes `[sync] last_timestamp` to ini
 - `mirrorSrcToDevice` (line ~717): full mirror path (format + plan + upload/delete)
 
+**Content-hash change detection (the sync is byte-aware, not save-aware):**
+- The watcher is scoped to `<src>/**` (a `RelativePattern` off the workspace
+  root), so it only wakes for src/ changes — not node_modules/.git/build churn.
+  `onDidSaveTextDocument` + the change handlers still defend with `isUriUnderSrc`.
+- A sha1 of each uploaded file's bytes is stored in `workspaceState`
+  (`nodemcu.uploadHashes`, keyed by absolute local path). `fileContentHash`,
+  `getUploadHashes`, `saveUploadHashes` are the helpers.
+- `scheduleSrcSyncUri` skips the upload entirely when the saved file's hash
+  matches the stored one — a no-op Ctrl+S (which still bumps mtime) does nothing.
+- `planMirrorSync` (in `src/upload/srcMirror.ts`) now takes optional
+  `uploadHashes` + `hashFile` and prefers them over mtime for `changedOnly`
+  planning; it falls back to mtime when no hash function is supplied or it
+  returns null (so the existing tests and callers stay valid).
+- **Reflash re-mirrors all of src/:** when `doUploadSingleFile` detects a
+  C-module change (`isCModulesConfigChanged`), it no longer uploads just the one
+  saved file — flashing wipes the device filesystem, so it delegates to a full
+  `mirrorSrcToDevice({ changedOnly: false })` (build + flash + re-upload every
+  src/ file and Lua module).
+
 ### 9.2 Bug fix: Device UUID clobbering
 
 **Root cause:** `updateSyncTimestamp(cfg)` received a stale `cfg` captured before

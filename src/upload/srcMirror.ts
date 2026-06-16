@@ -43,6 +43,8 @@ export function planMirrorSync(opts: {
   srcDir: string;
   remoteFiles: FileEntry[];
   uploadTimestamps?: Record<string, number>;
+  uploadHashes?: Record<string, string>;
+  hashFile?: (filePath: string) => string | null;
   changedOnly?: boolean;
 }): MirrorPlan {
   const localFiles = localFilesForSrc(opts.srcDir);
@@ -50,6 +52,15 @@ export function planMirrorSync(opts: {
   const upload = opts.changedOnly
     ? localFiles.filter((file) => {
         if (!fs.existsSync(file.localPath)) return false;
+        // Prefer content hashes when available: a no-op save still bumps mtime,
+        // so mtime alone re-uploads byte-identical files. A matching hash means
+        // the contents are exactly what we last uploaded — skip it.
+        if (opts.hashFile && opts.uploadHashes) {
+          const hash = opts.hashFile(file.localPath);
+          if (hash != null) {
+            return opts.uploadHashes[file.localPath] !== hash;
+          }
+        }
         const mtime = fs.statSync(file.localPath).mtimeMs;
         const lastMtime = opts.uploadTimestamps?.[file.localPath] ?? 0;
         return mtime > lastMtime;
