@@ -14,6 +14,7 @@ import {
   hasDeviceUuid,
   setCModule,
   setLuaModule,
+  TLS_ENABLE_SSL_BUFFER_SIZE,
   type NodemcuConfig,
 } from "./config/nodemcuIni";
 import { IniCompletionItemProvider } from "./config/iniCompletion";
@@ -1653,7 +1654,12 @@ async function doToggleCModule(item?: { module: CModuleInfo }): Promise<void> {
   }
   if (!modulePick) return;
   const currently = cfg.c_modules[modulePick.label] ?? false;
-  const newCfg = setCModule(cfg, modulePick.label, !currently);
+  let newCfg = setCModule(cfg, modulePick.label, !currently);
+  // Enabling the tls module pulls in CLIENT_SSL; seed a sensible TLS buffer size
+  // in [build] so the user starts from a value that actually completes handshakes.
+  if (!currently && modulePick.label.toLowerCase() === "tls") {
+    newCfg = { ...newCfg, build: { ...newCfg.build, ssl_buffer_size: TLS_ENABLE_SSL_BUFFER_SIZE } };
+  }
   const iniPath = existingIniPath();
   if (iniPath) {
     cachedConfig = newCfg;

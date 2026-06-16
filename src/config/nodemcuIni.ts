@@ -48,6 +48,12 @@ export interface NodemcuConfig {
 // (a full TLS record) is the recommended default (docs/modules/tls.md).
 export const DEFAULT_SSL_BUFFER_SIZE = 16384;
 
+// Buffer size written into [build] ssl_buffer_size when the tls module is first
+// enabled. 8192 is the smallest size that completes real handshakes while
+// leaving enough heap on the device (see TLS heap budget notes); the user can
+// still raise it to 16384 afterwards.
+export const TLS_ENABLE_SSL_BUFFER_SIZE = 8192;
+
 const DEFAULT_NODEMCU: NodemcuSection = {
   lua_version: "53",
   lua_number_integral: false,

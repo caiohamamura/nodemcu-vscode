@@ -61,6 +61,7 @@ export class IniCompletionItemProvider implements vscode.CompletionItemProvider 
       items.push("true", "false");
     } else if (section === "build") {
       if (["parallel", "verbose"].includes(key)) items.push("true", "false");
+      else if (key === "ssl_buffer_size") items.push("4096", "8192", "16384");
     }
 
     return items.map((val) => new vscode.CompletionItem(val, vscode.CompletionItemKind.Value));
@@ -102,7 +103,7 @@ export class IniCompletionItemProvider implements vscode.CompletionItemProvider 
     } else if (section === "flash") {
       keys.push("extra_files");
     } else if (section === "build") {
-      keys.push("parallel", "verbose");
+      keys.push("parallel", "verbose", "ssl_buffer_size");
     }
 
     return keys.map((k) => new vscode.CompletionItem(k, vscode.CompletionItemKind.Property));
