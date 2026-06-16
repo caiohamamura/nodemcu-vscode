@@ -2,7 +2,7 @@
   "name": "nodemcu-vscode",
   "displayName": "NodeMCU Lua",
   "description": "Cross-platform Lua firmware development for NodeMCU/ESP8266: build, flash, upload, with workspace autosync (Ctrl+S).",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "caiohamamura",
   "license": "MIT",
   "engines": {
