@@ -25,6 +25,10 @@ export function userModulesHeader(firmwarePath: string): string {
   return path.join(firmwarePath, "app", "include", "user_modules.h");
 }
 
+export function userConfigHeader(firmwarePath: string): string {
+  return path.join(firmwarePath, "app", "include", "user_config.h");
+}
+
 export function esptoolScript(firmwarePath: string): string {
   return path.join(firmwarePath, "tools", "toolchains", "esptool.py");
 }

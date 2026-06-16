@@ -34,6 +34,7 @@ describe("lua module completion helpers", () => {
   it("uses firmware lua_modules source paths", () => {
     const source = luaModuleSource({
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",
@@ -46,6 +47,7 @@ describe("lua module completion helpers", () => {
   it("creates a completion item that enables and syncs the module on accept", () => {
     const item = createLuaModuleCompletionItem({
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "temperature sensor",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",
@@ -61,6 +63,7 @@ describe("lua module completion helpers", () => {
   it("selects integer variant when lua_number_integral is true", () => {
     const source = luaModuleSource({
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",
@@ -76,6 +79,7 @@ describe("lua module completion helpers", () => {
   it("completion item uses integer variant in command args when lua_number_integral is true", () => {
     const item = createLuaModuleCompletionItem({
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "temperature sensor",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",

@@ -1598,7 +1598,7 @@ async function doAddLuaModule(item?: { module: LuaModuleInfo }): Promise<void> {
   }
   if (!pick) return;
   const selectedFile = selectMainFileForConfig(pick.module, cfg.nodemcu);
-  const newCfg = setLuaModule(cfg, pick.label, `lua_modules/${pick.label}/${path.basename(selectedFile)}`);
+  const newCfg = setLuaModule(cfg, pick.module.name, `lua_modules/${pick.module.dirName}/${path.basename(selectedFile)}`);
   const iniPath = existingIniPath();
   if (iniPath) {
     cachedConfig = newCfg;
@@ -1622,7 +1622,7 @@ async function doToggleLuaModule(item?: { module: LuaModuleInfo }): Promise<void
   if (nextCfg.lua_modules[item.module.name]) {
     delete nextCfg.lua_modules[item.module.name];
   } else {
-    nextCfg.lua_modules[item.module.name] = `lua_modules/${item.module.name}/${path.basename(item.module.mainFile)}`;
+    nextCfg.lua_modules[item.module.name] = `lua_modules/${item.module.dirName}/${path.basename(item.module.mainFile)}`;
   }
   const iniPath = existingIniPath();
   if (iniPath) {

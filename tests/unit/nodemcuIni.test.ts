@@ -146,6 +146,29 @@ describe("serializeIni", () => {
     expect(reparsed.sync.last_timestamp).toBe("2024-06-01T12:00:00.000Z");
     expect(reparsed.flash.extra_files).toEqual([{ path: "spiffs.bin", offset: "0x100000" }]);
   });
+
+  it("roundtrips a custom ssl_buffer_size", () => {
+    const original = defaultConfig();
+    original.build.ssl_buffer_size = 8192;
+    const reparsed = parseIni(serializeIni(original));
+    expect(reparsed.build.ssl_buffer_size).toBe(8192);
+  });
+});
+
+describe("ssl_buffer_size parsing", () => {
+  it("defaults to 16384 when absent", () => {
+    expect(parseIni("").build.ssl_buffer_size).toBe(16384);
+  });
+
+  it("reads an explicit value from [build]", () => {
+    const cfg = parseIni("[build]\nssl_buffer_size = 4096\n");
+    expect(cfg.build.ssl_buffer_size).toBe(4096);
+  });
+
+  it("falls back to the default for non-positive or invalid values", () => {
+    expect(parseIni("[build]\nssl_buffer_size = 0\n").build.ssl_buffer_size).toBe(16384);
+    expect(parseIni("[build]\nssl_buffer_size = notanumber\n").build.ssl_buffer_size).toBe(16384);
+  });
 });
 
 describe("setCModule / setLuaModule", () => {

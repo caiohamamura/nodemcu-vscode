@@ -2,9 +2,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Shell } from "../util/shell";
 import { ToolchainLocator, cmakeConfigureCommand, cmakeBuildCommand } from "./toolchain";
-import { writeUserModulesHeader, diffSelectedModules, readSelectedModules } from "./userModulesWriter";
+import { writeUserModulesHeader, diffSelectedModules, readSelectedModules, writeUserConfigSsl, isTlsEnabled } from "./userModulesWriter";
 import { parseProblems, summarize } from "./outputParser";
-import { appModulesDir, defaultBuildDir, userModulesHeader, binOutput, toolchainBinDirs } from "../util/paths";
+import { appModulesDir, defaultBuildDir, userModulesHeader, userConfigHeader, binOutput, toolchainBinDirs } from "../util/paths";
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import type { CompileProblem } from "./outputParser";
 import type { ToolchainInfo } from "./toolchain";
@@ -44,6 +44,9 @@ export class BuildManager {
     writeUserModulesHeader(headerPath, ctx.config);
     const after = readSelectedModules(headerPath);
     const diff = diffSelectedModules(before, after);
+    // Keep CLIENT_SSL_ENABLE / SSL_BUFFER_SIZE in user_config.h in lockstep with
+    // the tls module so enabling tls alone yields a working HTTPS/TLS firmware.
+    const sslChanged = writeUserConfigSsl(userConfigHeader(ctx.firmwarePath), isTlsEnabled(ctx.config), ctx.config.build.ssl_buffer_size);
     const buildDir = defaultBuildDir(ctx.firmwarePath);
     const modulesSrcDir = appModulesDir(ctx.firmwarePath);
     // A build dir counts as "configured" only if CMake finished the generate
@@ -58,7 +61,7 @@ export class BuildManager {
       fs.existsSync(path.join(buildDir, "build.ninja")) ||
       fs.existsSync(path.join(buildDir, "Makefile"));
     const buildDirMissing = !cacheExists || !generatorFileExists;
-    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0;
+    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0 || sslChanged;
     if (needsReconfigure) {
       // The firmware is a CMake superbuild: the real compile runs inside an
       // ExternalProject whose build step is gated by stamp files that the

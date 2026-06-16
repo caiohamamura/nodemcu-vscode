@@ -216,7 +216,7 @@ Extension Development Host (see §9).
 | `src/device/liveEditFs.ts` | `LiveEditFileSystemProvider`, `LIVE_EDIT_SCHEME` | Writable in-memory `nodemcu-live:` documents for Device Files live edit; saves are uploaded by `extension.ts`. |
 | `src/flash/autoPort.ts` | `chooseAutoPort`, `isNodeMcuLikePort` | Pure auto-selection policy: keep available configured port; otherwise select only an unambiguous single or NodeMCU-like port. |
 | `src/build/toolchain.ts` | `ToolchainLocator`, `cmakeConfigureCommand`, `cmakeBuildCommand`, `esptoolFlashCommand`, `normalizeFlashSize` | Detects Ninja > MSYS Makefiles > NMake > MinGW > Unix Makefiles; normalizes `4M` → `4MB`. |
-| `src/build/userModulesWriter.ts` | `generateUserModulesHeader`, `writeUserModulesHeader`, `readSelectedModules`, `diffSelectedModules`, `isCModulesConfigChanged` | Hardcoded `KNOWN_MODULES` set; emits `LUA_USE_MODULES_<NAME>` defines. |
+| `src/build/userModulesWriter.ts` | `generateUserModulesHeader`, `writeUserModulesHeader`, `readSelectedModules`, `diffSelectedModules`, `isCModulesConfigChanged`, `isTlsEnabled`, `setUserConfigSsl`, `writeUserConfigSsl` | Hardcoded `KNOWN_MODULES` set; emits `LUA_USE_MODULES_<NAME>` defines. `MODULE_DEPENDENCIES` force-enables deps (`tls` → `http`). `writeUserConfigSsl` toggles `CLIENT_SSL_ENABLE` / `SSL_BUFFER_SIZE` in `app/include/user_config.h` to match the `tls` module (buffer size from `[build] ssl_buffer_size`, default `16384`); `BuildManager.build` calls it and folds its return into `needsReconfigure`. |
 | `src/build/outputParser.ts` | `parseProblems`, `summarize`, `extractModuleBuildSummary` | Pure regex; no vscode dependency. |
 | `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
@@ -224,7 +224,7 @@ Extension Development Host (see §9).
 | `src/flash/flashManager.ts` | `FlashManager` | Prefers `firmware/tools/toolchains/esptool.py`; falls back to `python -m esptool`. Standard `0x00000` / `0x10000` mapping. |
 | `src/flash/serialDiscovery.ts` | `SerialDiscovery` | Tries `serialport`, then PowerShell `SerialPort::GetPortNames` on Windows, then `/dev/tty*` glob on Linux. Honors `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` env var (JSON array of strings or `{path, manufacturer, ...}`). |
 | `src/luaApi/apiFiles.ts` | `generateLuaApiFile`, `generateLuaRc`, `writeLuaRc` | Hardcoded `KNOWN_GLOBALS` descriptions for ~30 modules; emits `---@meta` + `---@class NodeMCUModule` annotations. |
-| `src/luaPicker/moduleList.ts` | `listLuaModulesFromFirmware`, `listCModules` | `LuaModuleInfo` has `mainFile` + `examples`; `CModuleInfo` has `category: "core" \| "optional" \| "library"`. The optional list is hardcoded (`coap`, `dht`, `http`, `mqtt`, `pcm`, `sjson`, `tsl2561`, `websocket`); libraries are `u8g2`, `ucg`. |
+| `src/luaPicker/moduleList.ts` | `listLuaModulesFromFirmware`, `listCModules` | `LuaModuleInfo.name` is the **main Lua file's basename** (the require name), `dirName` is the firmware folder — they differ for misnamed folders (`lua_modules/http/httpserver.lua` → name `httpserver`, dir `http`); also has `mainFile` + `examples`. Source paths stored in ini use `dirName`; `luaModuleResolver` resolves firmware modules via `firmwarePath + source`. `CModuleInfo` has `category: "core" \| "optional" \| "library"`. The optional list is hardcoded (`coap`, `dht`, `http`, `mqtt`, `pcm`, `sjson`, `tsl2561`, `websocket`); libraries are `u8g2`, `ucg`. |
 | `src/luaPicker/luaModuleCompletion.ts` | `createLuaModuleCompletionItem`, `luaModuleRequireText`, `luaModuleSource` | Builds Lua autocomplete snippets and the accept-command payload that enables/syncs modules. |
 | `src/luaPicker/luaModuleResolver.ts` | `resolveLuaModule`, `resolveAllLuaModules`, `validateLuaModuleSource` | Search order: absolute → `workspaceRoot/<source>` → `firmware/lua_modules/<name>/<basename>` → `firmware/lua_modules/<source>`. Rejects `..` paths and invalid URLs. |
 | `src/status/statusBar.ts` | `StatusEmitter` | `EventEmitter` subclass; states: `idle`, `configuring`, `building`, `flashing`, `uploading`, `success`, `error`. |
@@ -298,6 +298,7 @@ extra_files = spiffs.bin@0x100000  # comma list of "path@offset"
 [build]
 parallel = true
 verbose = false
+ssl_buffer_size = 16384            # mbed TLS record buffer when tls/CLIENT_SSL is on
 ```
 
 The `resources/templates/nodemcu.ini` is the bootstrap template. The default

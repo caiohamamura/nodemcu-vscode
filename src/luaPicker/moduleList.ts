@@ -3,7 +3,10 @@ import * as path from "node:path";
 import { luaModulesDir, appModulesDir, cModuleNameFromFile } from "../util/paths";
 
 export interface LuaModuleInfo {
+  /** Logical module name you `require()` — the main Lua file's basename. */
   name: string;
+  /** Firmware folder under `lua_modules/`, which can differ from `name`. */
+  dirName: string;
   description: string;
   mainFile: string;
   dir: string;
@@ -33,10 +36,16 @@ export async function listLuaModulesFromDir(root: string): Promise<LuaModuleInfo
     if (luaFiles.length === 0) continue;
     const mainFile = selectMainFile(entry, luaFiles);
     if (!mainFile) continue;
+    // The real module name is the main file's basename (the name it returns and
+    // is `require()`d by), not the firmware directory — which is misnamed for a
+    // few modules (e.g. `lua_modules/http/httpserver.lua` is the `httpserver`
+    // module, per docs/lua-modules/httpserver.md).
+    const name = path.basename(mainFile, ".lua");
     const description = await extractDescription(path.join(dir, mainFile));
     const examples = luaFiles.filter((f) => isNonMainFile(f, entry));
     out.push({
-      name: entry,
+      name,
+      dirName: entry,
       description,
       mainFile: path.join(dir, mainFile),
       dir,

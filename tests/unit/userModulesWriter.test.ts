@@ -8,6 +8,9 @@ import {
   readSelectedModules,
   diffSelectedModules,
   isCModulesConfigChanged,
+  isTlsEnabled,
+  setUserConfigSsl,
+  writeUserConfigSsl,
 } from "../../src/build/userModulesWriter";
 import { defaultConfig } from "../../src/config/nodemcuIni";
 
@@ -64,6 +67,75 @@ describe("generateUserModulesHeader", () => {
     const b = generateUserModulesHeader(cfg);
     expect(a).not.toBe(b);
     expect(b).toMatch(/^#define LUA_USE_MODULES_MQTT$/m);
+  });
+
+  it("force-enables http when tls is selected (tls dependency)", () => {
+    const cfg = defaultConfig();
+    cfg.c_modules = { tls: true };
+    const header = generateUserModulesHeader(cfg);
+    expect(header).toMatch(/^#define LUA_USE_MODULES_TLS$/m);
+    expect(header).toMatch(/^#define LUA_USE_MODULES_HTTP$/m);
+  });
+
+  it("leaves http commented out when tls is not selected", () => {
+    const cfg = defaultConfig();
+    cfg.c_modules = { wifi: true };
+    const header = generateUserModulesHeader(cfg);
+    expect(header).toMatch(/^\/\/#define LUA_USE_MODULES_HTTP$/m);
+    expect(header).toMatch(/^\/\/#define LUA_USE_MODULES_TLS$/m);
+  });
+});
+
+describe("user_config.h SSL toggling for TLS", () => {
+  const sample = [
+    "//#define CLIENT_SSL_ENABLE",
+    "#define SSL_BUFFER_SIZE 4096",
+  ].join("\n") + "\n";
+
+  it("isTlsEnabled reflects the tls c_module flag", () => {
+    const cfg = defaultConfig();
+    cfg.c_modules = { wifi: true };
+    expect(isTlsEnabled(cfg)).toBe(false);
+    cfg.c_modules.tls = true;
+    expect(isTlsEnabled(cfg)).toBe(true);
+  });
+
+  it("enables CLIENT_SSL_ENABLE and bumps the buffer to the default when on", () => {
+    const out = setUserConfigSsl(sample, true);
+    expect(out).toMatch(/^#define CLIENT_SSL_ENABLE$/m);
+    expect(out).not.toMatch(/^\/\/#define CLIENT_SSL_ENABLE$/m);
+    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 16384$/m);
+  });
+
+  it("honors a custom buffer size", () => {
+    const out = setUserConfigSsl(sample, true, 8192);
+    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 8192$/m);
+  });
+
+  it("falls back to the default buffer size for invalid values", () => {
+    const out = setUserConfigSsl(sample, true, 0);
+    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 16384$/m);
+  });
+
+  it("comments CLIENT_SSL_ENABLE back out when off and leaves the buffer", () => {
+    const enabled = setUserConfigSsl(sample, true);
+    const out = setUserConfigSsl(enabled, false);
+    expect(out).toMatch(/^\/\/#define CLIENT_SSL_ENABLE$/m);
+    // buffer is only meaningful with SSL on, so we don't churn it back down
+    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 16384$/m);
+  });
+
+  it("writeUserConfigSsl reports whether the file changed and is idempotent", () => {
+    const headerPath = path.join(tmp, "user_config.h");
+    fs.writeFileSync(headerPath, sample, "utf-8");
+    expect(writeUserConfigSsl(headerPath, true)).toBe(true);
+    expect(writeUserConfigSsl(headerPath, true)).toBe(false);
+    const content = fs.readFileSync(headerPath, "utf-8");
+    expect(content).toMatch(/^#define CLIENT_SSL_ENABLE$/m);
+  });
+
+  it("writeUserConfigSsl is a no-op when the file is missing", () => {
+    expect(writeUserConfigSsl(path.join(tmp, "nope.h"), true)).toBe(false);
   });
 });
 

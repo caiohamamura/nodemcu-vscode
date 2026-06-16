@@ -40,8 +40,13 @@ export interface NodemcuConfig {
   c_modules: Record<string, boolean>;
   lua_modules: Record<string, string>;
   flash: { extra_files: FlashExtraFile[] };
-  build: { parallel: boolean; verbose: boolean };
+  build: { parallel: boolean; verbose: boolean; ssl_buffer_size: number };
 }
+
+// mbed TLS record buffer size used when the tls module enables CLIENT_SSL. The
+// firmware ships 4096, which is too small for most real TLS handshakes; 16384
+// (a full TLS record) is the recommended default (docs/modules/tls.md).
+export const DEFAULT_SSL_BUFFER_SIZE = 16384;
 
 const DEFAULT_NODEMCU: NodemcuSection = {
   lua_version: "53",
@@ -66,7 +71,7 @@ export function defaultConfig(): NodemcuConfig {
     c_modules: {},
     lua_modules: {},
     flash: { extra_files: [] },
-    build: { parallel: true, verbose: false },
+    build: { parallel: true, verbose: false, ssl_buffer_size: DEFAULT_SSL_BUFFER_SIZE },
   };
 }
 
@@ -153,6 +158,8 @@ export function parseIni(content: string): NodemcuConfig {
 
   config.build.parallel = coerceBool(b.parallel, config.nodemcu.parallel);
   config.build.verbose = coerceBool(b.verbose, config.nodemcu.verbose);
+  const sslBuf = coerceNumber(b.ssl_buffer_size, DEFAULT_SSL_BUFFER_SIZE);
+  config.build.ssl_buffer_size = sslBuf > 0 ? Math.floor(sslBuf) : DEFAULT_SSL_BUFFER_SIZE;
 
   return config;
 }
@@ -196,6 +203,7 @@ export function serializeIni(config: NodemcuConfig): string {
   out.build = {
     parallel: config.build.parallel,
     verbose: config.build.verbose,
+    ssl_buffer_size: config.build.ssl_buffer_size,
   };
   return ini.stringify(out);
 }

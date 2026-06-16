@@ -80,7 +80,7 @@ describe("listLuaModulesFromFirmware", () => {
     expect(mods[0].mainFile).toBe(path.join(dir, "HDC1000.lua"));
   });
 
-  it("selects the directory-named file over http-example (http pattern)", async () => {
+  it("names the http folder's module after httpserver.lua, not the folder", async () => {
     const fw = path.join(tmp, "fw");
     const dir = path.join(fw, "lua_modules", "http");
     await fs.mkdir(dir, { recursive: true });
@@ -89,6 +89,10 @@ describe("listLuaModulesFromFirmware", () => {
     const mods = await listLuaModulesFromFirmware(fw);
     expect(mods).toHaveLength(1);
     expect(mods[0].mainFile).toBe(path.join(dir, "httpserver.lua"));
+    // The misnamed `http` folder must surface as the `httpserver` module so it
+    // is required/uploaded correctly and does not collide with the http C module.
+    expect(mods[0].name).toBe("httpserver");
+    expect(mods[0].dirName).toBe("http");
   });
 
   it("selects the directory-named file for liquidcrystal over helper files", async () => {
@@ -109,6 +113,7 @@ describe("selectMainFileForConfig", () => {
   it("returns mainFile when no config is passed", () => {
     const mod = {
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",
@@ -124,6 +129,7 @@ describe("selectMainFileForConfig", () => {
   it("returns integer variant when lua_number_integral is true", () => {
     const mod = {
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",
@@ -140,6 +146,7 @@ describe("selectMainFileForConfig", () => {
   it("falls back to mainFile when integer variant does not exist", () => {
     const mod = {
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",
@@ -153,6 +160,7 @@ describe("selectMainFileForConfig", () => {
   it("returns mainFile when lua_number_integral is false", () => {
     const mod = {
       name: "ds18b20",
+      dirName: "ds18b20",
       description: "",
       mainFile: "/fw/lua_modules/ds18b20/ds18b20.lua",
       dir: "/fw/lua_modules/ds18b20",

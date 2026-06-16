@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { NodemcuConfig } from "../config/nodemcuIni";
+import { DEFAULT_SSL_BUFFER_SIZE, type NodemcuConfig } from "../config/nodemcuIni";
 
 const GUARD_BEGIN = "#ifndef __USER_MODULES_H__\n#define __USER_MODULES_H__\n";
 const GUARD_END = "#endif\t/* __USER_MODULES_H__ */\n";
@@ -17,6 +17,14 @@ const KNOWN_MODULES = new Set([
   "u8g2", "ucg", "websocket", "wiegand", "wifi", "wifi_monitor", "wps",
   "ws2801", "ws2812", "ws2812_effects", "xpt2046",
 ]);
+
+// Some modules cannot be built in isolation. Enabling a module here force-enables
+// its dependencies in user_modules.h regardless of the [c_modules] selection, so a
+// user who "just adds tls" gets a firmware that actually compiles and links.
+// `tls` requires `http` (and `net`, already mandatory) per docs/modules/tls.md.
+export const MODULE_DEPENDENCIES: Record<string, string[]> = {
+  tls: ["http"],
+};
 
 function upperDefine(name: string): string {
   return `LUA_USE_MODULES_${name.toUpperCase()}`;
@@ -43,6 +51,15 @@ export function generateUserModulesHeader(config: NodemcuConfig): string {
   for (const name of MANDATORY_C_MODULES) {
     if (KNOWN_MODULES.has(name)) {
       selected.add(name);
+    }
+  }
+
+  // Pull in dependencies of whatever is selected (e.g. tls -> http).
+  for (const mod of Array.from(selected)) {
+    for (const dep of MODULE_DEPENDENCIES[mod] ?? []) {
+      if (KNOWN_MODULES.has(dep)) {
+        selected.add(dep);
+      }
     }
   }
 
@@ -109,5 +126,44 @@ export function isCModulesConfigChanged(headerPath: string, config: NodemcuConfi
   const currentContent = fs.readFileSync(headerPath, "utf-8");
   const expectedContent = generateUserModulesHeader(config);
   return currentContent !== expectedContent;
+}
+
+export function isTlsEnabled(config: NodemcuConfig): boolean {
+  for (const [name, enabled] of Object.entries(config.c_modules)) {
+    if (enabled && name.toLowerCase() === "tls") return true;
+  }
+  return false;
+}
+
+/**
+ * Toggle the SSL client support in `app/include/user_config.h` to match whether
+ * the `tls` module is enabled. The TLS module needs `CLIENT_SSL_ENABLE` defined
+ * (commented out by default) and a larger `SSL_BUFFER_SIZE`. Pure string
+ * transform so it stays unit-testable; only the two known lines are touched.
+ */
+export function setUserConfigSsl(content: string, enabled: boolean, bufferSize: number = DEFAULT_SSL_BUFFER_SIZE): string {
+  let out = content;
+  const clientRe = /^[ \t]*\/*[ \t]*#define[ \t]+CLIENT_SSL_ENABLE\b.*$/m;
+  if (clientRe.test(out)) {
+    out = out.replace(clientRe, enabled ? "#define CLIENT_SSL_ENABLE" : "//#define CLIENT_SSL_ENABLE");
+  }
+  if (enabled) {
+    const size = Number.isFinite(bufferSize) && bufferSize > 0 ? Math.floor(bufferSize) : DEFAULT_SSL_BUFFER_SIZE;
+    const bufRe = /^[ \t]*\/*[ \t]*#define[ \t]+SSL_BUFFER_SIZE\b.*$/m;
+    if (bufRe.test(out)) {
+      out = out.replace(bufRe, `#define SSL_BUFFER_SIZE ${size}`);
+    }
+  }
+  return out;
+}
+
+/** Apply {@link setUserConfigSsl} to a file on disk. Returns true if it changed. */
+export function writeUserConfigSsl(headerPath: string, enabled: boolean, bufferSize: number = DEFAULT_SSL_BUFFER_SIZE): boolean {
+  if (!fs.existsSync(headerPath)) return false;
+  const before = fs.readFileSync(headerPath, "utf-8");
+  const after = setUserConfigSsl(before, enabled, bufferSize);
+  if (after === before) return false;
+  fs.writeFileSync(headerPath, after, "utf-8");
+  return true;
 }
 

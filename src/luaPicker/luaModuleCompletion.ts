@@ -9,7 +9,7 @@ export function luaModuleRequireText(moduleName: string): string {
 
 export function luaModuleSource(module: LuaModuleInfo, config?: { lua_number_integral?: boolean }): string {
   const mainFile = selectMainFileForConfig(module, config);
-  return `lua_modules/${module.name}/${path.basename(mainFile)}`;
+  return `lua_modules/${module.dirName}/${path.basename(mainFile)}`;
 }
 
 export function createLuaModuleCompletionItem(module: LuaModuleInfo, config?: { lua_number_integral?: boolean }): vscode.CompletionItem {

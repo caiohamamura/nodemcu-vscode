@@ -22,6 +22,10 @@ export async function resolveLuaModule(
     candidates.push(entry.source);
   } else {
     candidates.push(path.resolve(workspaceRoot, entry.source));
+    // A firmware module source is firmware-root-relative (e.g.
+    // `lua_modules/http/httpserver.lua`), so it resolves even when the module's
+    // logical name (`httpserver`) differs from its firmware folder (`http`).
+    candidates.push(path.join(firmwarePath, entry.source));
     const fwLua = luaModulesDir(firmwarePath);
     candidates.push(path.join(fwLua, entry.name, path.basename(entry.source)));
     candidates.push(path.join(fwLua, entry.source));
