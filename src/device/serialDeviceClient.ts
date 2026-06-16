@@ -9,8 +9,27 @@ import { validateRemoteName } from "../upload/directSerialUploader";
 const PROMPT_TIMEOUT_MS = 6_000;
 const BOOT_TIMEOUT_MS = 10_000;
 const MKFS_TIMEOUT_MS = 45_000;
-const HEX_CHUNK_LENGTH = 232;
 const TEMP_REMOTE_NAME = ".__nodemcu_upload_tmp";
+// Raw-stream tuning. The device captures the byte stream straight into SPIFFS
+// via a uart.on("data") handler (run_input=0, so bytes are written verbatim and
+// never interpreted), instead of the old hex-per-REPL-command loop.
+//
+// Two hard constraints, both learned from the physical device:
+//   1. The NodeMCU REPL input line buffer is ~256 bytes; a longer command is
+//      silently truncated and fails to parse. Every command we send stays well
+//      under that — the handler is registered in small pieces.
+//   2. Blasting the whole file at once overflows the UART RX buffer (the Lua
+//      data callback cannot drain + file.write fast enough at 115200), so bytes
+//      are lost. We therefore send fixed-size windows and wait for the device
+//      to ACK each one — flow control that bounds in-flight bytes to one window.
+const STREAM_WINDOW = 256;
+const STREAM_ACK_TIMEOUT_MS = 15_000;
+// Generous: a large file plus SPIFFS write/GC stalls can take a while.
+const STREAM_DONE_TIMEOUT_MS = 60_000;
+// Device-side helper: hex-encode a byte string. Defined as its own short REPL
+// command (the whole line must stay under NodeMCU's ~256-char input buffer).
+const HEX_OF_STRING_DEF =
+  `_G.__h=function(s) local o="" for i=1,#s do o=o..string.format("%02x",string.byte(s,i)) end return o end`;
 
 export interface Result {
   success: boolean;
@@ -41,21 +60,8 @@ export class SerialDeviceClient {
         }
 
         await this.ensurePrompt(cursor);
-        await this.execute(cursor, `file.remove(${luaString(TEMP_REMOTE_NAME)})`, options.signal);
-        await this.execute(cursor, `assert(file.open(${luaString(TEMP_REMOTE_NAME)},"w+"))`, options.signal);
-        await this.execute(
-          cursor,
-          `_G.__vscode_hex=function(s) for c in s:gmatch('..') do file.write(string.char(tonumber(c,16))) end end`,
-          options.signal,
-        );
+        await this.streamToTempFile(cursor, Buffer.from(content), options.signal);
 
-        const hex = Buffer.from(content).toString("hex");
-        for (let index = 0; index < hex.length; index += HEX_CHUNK_LENGTH) {
-          throwIfAborted(options.signal);
-          await this.execute(cursor, `__vscode_hex(${luaString(hex.slice(index, index + HEX_CHUNK_LENGTH))})`, options.signal);
-        }
-
-        await this.execute(cursor, "file.flush() file.close()", options.signal);
         await this.execute(cursor, `file.remove(${luaString(uploadName)})`, options.signal);
         if (compiledName) {
           await this.execute(cursor, `file.remove(${luaString(compiledName)})`, options.signal);
@@ -72,32 +78,99 @@ export class SerialDeviceClient {
     }
   }
 
+  /**
+   * Stream `content` straight into the device's temp SPIFFS file.
+   *
+   * Instead of issuing a REPL command per chunk (the old hex loop, which paid a
+   * round-trip + prompt wait for every ~100 bytes), we arm a uart.on("data")
+   * handler on the device that writes received bytes directly to the open file,
+   * then send the raw bytes. `run_input` is 0 so the bytes are written verbatim
+   * and never echoed or interpreted — which makes the transfer binary-safe (the
+   * payload may contain any byte, including what would look like an end marker)
+   * and roughly halves the bytes on the wire versus hex.
+   *
+   * Flow control: the file is sent in fixed-size windows. The handler ACKs each
+   * completed window so we never have more than one window in flight — without
+   * this the RX buffer overflows and bytes are silently dropped. Termination is
+   * by exact byte count (not an in-band marker), so it is immune to a marker
+   * being split across UART callbacks. When the last byte lands the handler
+   * unregisters itself (handing control back to the REPL) and prints a done
+   * marker we wait for.
+   *
+   * Every command stays well under the ~256-byte REPL input buffer; a longer
+   * line is silently truncated by NodeMCU and would fail to parse.
+   */
+  private async streamToTempFile(cursor: SerialCursor, content: Buffer, signal?: AbortSignal): Promise<void> {
+    await this.execute(cursor, `file.remove(${luaString(TEMP_REMOTE_NAME)})`, signal);
+
+    if (content.length === 0) {
+      // No bytes to stream — the handler would never fire. Just create + close.
+      await this.execute(cursor, `assert(file.open(${luaString(TEMP_REMOTE_NAME)},"w+")) file.close()`, signal);
+      return;
+    }
+
+    // Short unique id keeps the register command well under the REPL line limit
+    // while still distinguishing this transfer's markers from any stale output.
+    const id = randomUUID().replace(/-/g, "").slice(0, 8);
+    const ackMarker = `~uA${id}~`;
+    const doneMarker = `~uZ${id}~`;
+    // Registered in pieces to stay under the REPL input-line limit. Globals hold
+    // the transfer state (uL=total, uW=window, un=received, ua=last ACKed).
+    await this.execute(cursor, `_G.uL=${content.length} _G.uW=${STREAM_WINDOW} _G.un=0 _G.ua=0`, signal);
+    await this.execute(cursor, `assert(file.open(${luaString(TEMP_REMOTE_NAME)},"w+"))`, signal);
+    const register =
+      `uart.on("data",0,function(d) file.write(d) un=un+#d ` +
+      `if un>=ua+uW then ua=ua+uW uart.write(0,${luaString(ackMarker)}) end ` +
+      `if un>=uL then file.close() uart.on("data") uart.write(0,${luaString(doneMarker)}) end end,0)`;
+    // After this returns the handler is armed; every subsequent byte we send is
+    // captured by it rather than interpreted by the REPL.
+    await this.execute(cursor, register, signal);
+
+    for (let offset = 0; offset < content.length; offset += STREAM_WINDOW) {
+      throwIfAborted(signal);
+      const end = Math.min(offset + STREAM_WINDOW, content.length);
+      await this.session.write(content.subarray(offset, end), { signal });
+      // The final window is confirmed by the done marker, not an ACK.
+      if (end < content.length) {
+        await cursor.waitFor(ackMarker, { timeoutMs: STREAM_ACK_TIMEOUT_MS, signal });
+      }
+    }
+
+    // Device confirms every byte is written and the UART is back under REPL
+    // control. Subsequent execute() calls drive the REPL normally again.
+    await cursor.waitFor(doneMarker, { timeoutMs: STREAM_DONE_TIMEOUT_MS, signal });
+  }
+
   async download(remoteName: string): Promise<{ success: boolean; content?: Buffer; error?: string }> {
     try {
       validateRemoteName(remoteName);
       const content = await this.session.runExclusive(`Download ${remoteName}`, async (cursor) => {
         await this.ensurePrompt(cursor);
+        // Defined in pieces so each REPL line stays under the ~256-char input
+        // buffer (a longer line is silently truncated by NodeMCU). `string.format`
+        // is used rather than `tostring`, whose number path is broken on some
+        // firmware builds (returns "g").
+        await this.execute(cursor, HEX_OF_STRING_DEF);
+        // RAM-safe: stream the hex straight to the UART in 64-byte chunks rather
+        // than building the whole hex string in the device's ~40 KB heap (which
+        // OOMs for files over ~2 KB). The read loop is synchronous, so NodeMCU's
+        // cooperative scheduler cannot interleave background output into it.
         await this.execute(
           cursor,
-          `_G.__vscode_hex_of_string=function(s) local out="" for i=1,#s do out=out..string.format("%02x",string.byte(s,i)) end return out end`,
+          `_G.__dump=function(f) if not file.open(f,"r") then uart.write(0,"ERR") return end while true do local c=file.read(64) if not c then break end uart.write(0,__h(c)) end file.close() end`,
         );
         const { begin, end, id } = createMarkers();
         const output = await this.execute(
           cursor,
-          [
-            `uart.write(0,${luaString(begin)});`,
-            `if file.open(${luaString(remoteName)},"r") then`,
-            `local out="OK:";`,
-            `while true do local c=file.read(64); if not c then break end out=out..__vscode_hex_of_string(c) end;`,
-            `file.close(); uart.write(0,out); else uart.write(0,"ERR:open"); end;`,
-            `uart.write(0,${luaString(end)})`,
-          ].join(" "),
+          `uart.write(0,${luaString(begin)}) __dump(${luaString(remoteName)}) uart.write(0,${luaString(end)})`,
+          undefined,
+          STREAM_DONE_TIMEOUT_MS,
         );
         const payload = extractMarkedPayload(output, begin, end);
-        if (!payload?.startsWith("OK:")) {
+        if (payload === null || payload.startsWith("ERR")) {
           throw new Error(`Unable to read remote file: ${remoteName} (${id})`);
         }
-        return Buffer.from(payload.slice(3), "hex");
+        return Buffer.from(payload.replace(/[^0-9a-fA-F]/g, ""), "hex");
       });
       return { success: true, content };
     } catch (error) {
@@ -109,17 +182,16 @@ export class SerialDeviceClient {
     try {
       const files = await this.session.runExclusive("List files", async (cursor) => {
         await this.ensurePrompt(cursor);
-        await this.execute(
-          cursor,
-          `_G.__vscode_hex_of_string=function(s) local out="" for i=1,#s do out=out..string.format("%02x",string.byte(s,i)) end return out end`,
-        );
+        await this.execute(cursor, HEX_OF_STRING_DEF);
         const { begin, end, id } = createMarkers();
+        // `string.format("%d",size)` not `tostring(size)`: the latter's number
+        // path is broken on some firmware builds (returns "g").
         const output = await this.execute(
           cursor,
           [
             `uart.write(0,${luaString(begin)});`,
             `for name,size in pairs(file.list()) do`,
-            `print(__vscode_hex_of_string(name)..string.char(9)..tostring(size));`,
+            `print(__h(name)..string.char(9)..string.format("%d",size));`,
             `end;`,
             `uart.write(0,${luaString(end)})`,
           ].join(" "),

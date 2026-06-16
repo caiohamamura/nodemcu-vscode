@@ -228,6 +228,7 @@ Extension Development Host (see §9).
 | `src/luaPicker/luaModuleCompletion.ts` | `createLuaModuleCompletionItem`, `luaModuleRequireText`, `luaModuleSource` | Builds Lua autocomplete snippets and the accept-command payload that enables/syncs modules. |
 | `src/luaPicker/luaModuleResolver.ts` | `resolveLuaModule`, `resolveAllLuaModules`, `validateLuaModuleSource` | Search order: absolute → `workspaceRoot/<source>` → `firmware/lua_modules/<name>/<basename>` → `firmware/lua_modules/<source>`. Rejects `..` paths and invalid URLs. |
 | `src/status/statusBar.ts` | `StatusEmitter` | `EventEmitter` subclass; states: `idle`, `configuring`, `building`, `flashing`, `uploading`, `success`, `error`. |
+| `src/device/serialDeviceClient.ts` | `SerialDeviceClient` | The **active** upload/download/list/remove/run/format path over the shared serial session (the `DirectSerialUploader` is now only a fallback/test class). See §10 for the streaming upload protocol and the NodeMCU REPL constraints it must respect. |
 | `src/upload/nodemcuTool.ts` | `NodemcuTool` | Spawns `node <bin/nodemcu-tool.js>`; honors `NODEMCU_VSCODE_NODEMCU_TOOL` env var (path to script) for test injection. `listFiles` parses JSON first, falls back to text. |
 | `src/util/paths.ts` | `resolveFirmwarePath`, `defaultBuildDir`, `userModulesHeader`, `esptoolScript`, `luaModulesDir`, `appModulesDir`, `binOutput`, `cModuleNameFromFile`, `isOptionalCModule` | Pure path helpers; no I/O except `fs.existsSync` for the optional C-module check. |
 | `src/util/shell.ts` | `Shell`, `quoteArg`, `formatCommand`, `CommandSpec` | `spawn`-based; `windowsHide: true` by default; `which` uses `where` on Windows, `which` elsewhere. |
@@ -630,3 +631,61 @@ path is fully understood should you encode it into a Vitest e2e suite.
   and hasn't pushed. Don't push unless explicitly asked.
 - `.claude/SESSIONS/` is gitignored — don't create files there for the project.
   Use proper skills under `.claude/SKILLS/` if you need reusable automation.
+
+---
+
+## 10. SerialDeviceClient device protocol (read before touching uploads)
+
+`SerialDeviceClient` (`src/device/serialDeviceClient.ts`) drives the device over
+the shared serial session by sending Lua to the REPL. Two NodeMCU constraints —
+both verified against a physical ESP8266 (NodeMCU 3.0.0, float build) — shape
+every command it emits. Violating either fails **silently**:
+
+1. **REPL input line limit ≈ 256 bytes.** A command line longer than that is
+   silently truncated and fails to parse, so the intended effect never happens
+   (e.g. a `uart.on` handler is never registered, or a read command produces no
+   output). Keep every line well under 256: define helpers/handlers in small
+   pieces (`HEX_OF_STRING_DEF`, `__dump`, the windowed-upload `_G.u*` setup)
+   rather than one giant statement. The old single-line download (359 chars) and
+   the first cut of the streaming upload (315 chars) both failed this way.
+2. **`tostring(<number>)` is broken on some builds** (returns `"g"`). Use
+   `string.format("%d", n)` / `%02x` instead. This is why `listFiles` sizes used
+   to come back as `0`.
+
+### 10.1 Streaming upload (`uploadContent` → `streamToTempFile`)
+
+Replaces the old "hex string, one `__vscode_hex(...)` REPL command per ~116
+bytes" loop. Now: open a temp file, arm a `uart.on("data",0,fn,0)` handler
+(`run_input=0` ⇒ received bytes are written verbatim, never echoed or
+interpreted ⇒ **binary-safe**), then send the raw file bytes. Termination is by
+exact byte count (`un>=uL`), not an in-band marker, so a payload may contain any
+byte sequence. On the last byte the handler unregisters itself and prints a
+unique done marker.
+
+**Flow control is mandatory.** Blasting the whole file at once overflows the RX
+buffer (the Lua data callback + `file.write` cannot keep up at 115200) and bytes
+are dropped, so the byte count never completes and the upload hangs. We send
+fixed `STREAM_WINDOW` (256) byte windows and wait for a per-window ACK from the
+device before sending the next — one window in flight at a time. Measured
+~0.8 KB/s for tiny files (latency-bound by setup + ACKs) up to ~3.8 KB/s at 8 KB.
+
+### 10.2 Download (`download` → `__dump`)
+
+Streams hex straight to the UART in 64-byte chunks instead of building the whole
+hex string in the ~40 KB device heap (which OOMs for files over ~2 KB). The read
+loop is a single synchronous Lua statement, and NodeMCU's scheduler is
+cooperative, so background timer/network callbacks (e.g. a project `init.lua`
+doing HTTP) cannot interleave output into the hex stream.
+
+### 10.3 Verifying upload/download changes on hardware
+
+`SerialDeviceClient` depends only on `vscode.EventEmitter` at runtime. To drive
+the **real** class against `/dev/ttyUSB0` without an Extension Development Host,
+bundle a small driver with esbuild aliasing `vscode` to a 10-line `EventEmitter`
+shim and keeping `serialport` external, then `node` the bundle. Reset first
+(`client.reset()`) — a previously aborted upload can leave a `uart.on("data")`
+handler armed with `run_input=0`, which swallows all REPL input until a reset.
+Validate with a payload containing every byte value 0–255 plus tokens like
+`EOF_END` to prove binary-safety; check large files (8 KB+) with a device-side
+length+checksum (`string.format`-based) when a full hex readback would be too
+slow.
