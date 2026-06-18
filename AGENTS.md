@@ -332,6 +332,16 @@ it via `BUILD_HOST_TOOLS`).
   `when: nodemcu.hasHostCompiler`). On-device, LFS modules are accessed via
   `node.flashindex(name)` / `node.LFS.get(name)` (NodeMCU's `require` does not
   always wire an LFS searcher).
+- **LFS-aware sync (no SPIFFS duplication).** When `lfs_size>0`, the LFS-bound
+  Lua (enabled local `[lua_modules]` + `src/*.lua`, except `init.lua`) lives in the
+  flash store, not SPIFFS — otherwise `require` resolves the SPIFFS `.lc` and
+  bypasses LFS. So: `planMirrorSync` takes an `excludeRemoteName` predicate that
+  drops those files from the upload set (and removes any remote copy);
+  `reconcileLuaModulesOnDevice` removes (not uploads) their SPIFFS `.lc`;
+  `doUploadSingleFile` skips an LFS-bound save and hints to run **Build & Deploy
+  LFS Image**; and `deployLfsImage` removes any leftover SPIFFS `.lc`/`.lua` after
+  `flashreload`. `collectLfsSources` / `lfsBoundNames` (extension.ts) are the
+  single source of truth for the bound set.
 - **Lua version must match.** `luac.cross` follows `-DLUA`, so the firmware and
   `luac.cross` must be the same Lua flavour or the device's LFS loader rejects the
   image. `BuildManager.luaFlavourChanged` reads the CMakeCache and forces a

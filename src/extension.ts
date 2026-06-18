@@ -1185,6 +1185,10 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     ? extensionContext.workspaceState.get<Record<string, number>>("nodemcu.uploadTimestamps") || {}
     : {};
   const uploadHashes = getUploadHashes();
+  // With LFS enabled, the bound Lua modules belong in the flash store, not
+  // SPIFFS. Excluding them here drops them from the upload set and schedules any
+  // existing SPIFFS copy for removal; the LFS image is pushed by deployLfsImage.
+  const lfsNames = await lfsBoundNames(cfg, fw);
   const plan = planMirrorSync({
     srcDir,
     remoteFiles: remote.files ?? [],
@@ -1192,6 +1196,7 @@ async function mirrorSrcToDevice(opts: { changedOnly: boolean; forceFormat?: boo
     uploadHashes,
     hashFile: fileContentHash,
     changedOnly: opts.changedOnly && !opts.forceFormat && !identity.isNew,
+    excludeRemoteName: lfsNames.size ? (name) => isLfsBoundRemoteName(name, lfsNames) : undefined,
   });
 
   if (plan.upload.length === 0 && plan.remove.length === 0) {
@@ -1308,10 +1313,22 @@ async function reconcileLuaModulesOnDevice(
   let removed = 0;
   let failed = 0;
 
+  const lfsOn = isLfsEnabled(cfg);
   for (const m of enabledLocal) {
     const localPath = m.resolvedLocalPath!;
     if (!fs.existsSync(localPath)) continue;
     const remoteName = `${m.name}.lc`;
+    if (lfsOn) {
+      // The module is in the flash store; drop any SPIFFS copy so require() does
+      // not resolve it from the filesystem (which would bypass LFS). The image
+      // itself is pushed by deployLfsImage.
+      if (remoteSet.has(remoteName)) {
+        const rr = await removeWithFallback({ ...toolOpts, compile: false }, remoteName);
+        if (rr.success) removed++;
+        else { failed++; outputChannel.appendLine(`Failed to remove SPIFFS copy of LFS module ${m.name}: ${rr.error}`); }
+      }
+      continue;
+    }
     const mtime = fs.statSync(localPath).mtimeMs;
     if (remoteSet.has(remoteName) && moduleTs[localPath] === mtime) continue; // present & unchanged
     setStatus("uploading", `syncing module ${m.name}...`);
@@ -1367,6 +1384,18 @@ async function doUploadSingleFile(uri: vscode.Uri, cfg: NodemcuConfig, signal?: 
       // a full mirror, which rebuilds+flashes and then re-uploads all of src/.
       outputChannel.appendLine("C modules changed — reflashing and re-mirroring full src/ (device filesystem is wiped on flash)...");
       await mirrorSrcToDevice({ changedOnly: false, signal });
+      return;
+    }
+  }
+
+  // With LFS enabled, a saved module that belongs to the flash store must not be
+  // uploaded to SPIFFS (it would shadow the LFS copy). Skip it and tell the user
+  // to redeploy the image; init.lua and non-LFS files keep the normal path.
+  if (fw && isLfsEnabled(cfg) && path.basename(uri.fsPath).toLowerCase() !== "init.lua") {
+    const base = path.basename(uri.fsPath).replace(/\.lua$/i, "").toLowerCase();
+    if ((await lfsBoundNames(cfg, fw)).has(base)) {
+      outputChannel.appendLine(`${remoteName} is an LFS module; run "NodeMCU: Build & Deploy LFS Image" to update it on the device.`);
+      setStatus("success", `${remoteName}: LFS module — run Build & Deploy LFS to update`);
       return;
     }
   }
@@ -1535,23 +1564,12 @@ async function updateHostCompilerContext(): Promise<void> {
  * SPIFFS bootstrap). Assumes the firmware already has the LFS partition and
  * luac.cross has been built (callers run a build first).
  */
-async function deployLfsImage(signal?: AbortSignal): Promise<void> {
-  const cfg = getConfigOrNull();
-  const fw = await getFirmwarePath();
-  if (!cfg || !fw) return;
-  const workspaceRoot = getWorkspaceRoot();
-  if (!workspaceRoot) return;
-
-  const luac = luacCrossPath(fw);
-  if (!fs.existsSync(luac)) {
-    vscode.window.showErrorMessage(
-      "luac.cross was not built (no host C compiler when the firmware was configured). Cannot build the LFS image.",
-    );
-    return;
-  }
-
-  // Collect Lua sources, de-duplicated by module name (basename). [lua_modules]
-  // wins over a same-named src/ file.
+/**
+ * Lua sources that go into the LFS image: enabled local `[lua_modules]` plus
+ * `src/*.lua` (excluding init.lua, which stays the SPIFFS bootstrap). De-duped by
+ * module name (basename); `[lua_modules]` wins over a same-named src/ file.
+ */
+async function collectLfsSources(cfg: NodemcuConfig, fw: string, workspaceRoot: string): Promise<string[]> {
   const files: string[] = [];
   const seen = new Set<string>();
   const addFile = (p: string): void => {
@@ -1571,6 +1589,47 @@ async function deployLfsImage(signal?: AbortSignal): Promise<void> {
       addFile(path.join(srcDir, entry));
     }
   }
+  return files;
+}
+
+/**
+ * Lowercase module basenames bound to LFS (no extension). When LFS is enabled,
+ * these must NOT also live in SPIFFS — otherwise `require` resolves the SPIFFS
+ * copy and the flash store is bypassed. Empty when LFS is off.
+ */
+async function lfsBoundNames(cfg: NodemcuConfig, fw: string | null): Promise<Set<string>> {
+  if (!isLfsEnabled(cfg) || !fw) return new Set();
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) return new Set();
+  const set = new Set<string>();
+  for (const f of await collectLfsSources(cfg, fw, workspaceRoot)) {
+    set.add(path.basename(f).replace(/\.lua$/i, "").toLowerCase());
+  }
+  return set;
+}
+
+/** A SPIFFS remote file (e.g. `greet.lc`/`greet.lua`) whose basename is LFS-bound. */
+function isLfsBoundRemoteName(remoteName: string, names: Set<string>): boolean {
+  const base = remoteName.replace(/\.(lua|lc)$/i, "").toLowerCase();
+  return /\.(lua|lc)$/i.test(remoteName) && names.has(base);
+}
+
+async function deployLfsImage(signal?: AbortSignal): Promise<void> {
+  const cfg = getConfigOrNull();
+  const fw = await getFirmwarePath();
+  if (!cfg || !fw) return;
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) return;
+
+  const luac = luacCrossPath(fw);
+  if (!fs.existsSync(luac)) {
+    vscode.window.showErrorMessage(
+      "luac.cross was not built (no host C compiler when the firmware was configured). Cannot build the LFS image.",
+    );
+    return;
+  }
+
+  const files = await collectLfsSources(cfg, fw, workspaceRoot);
   if (files.length === 0) {
     vscode.window.showInformationMessage("No Lua modules or src/*.lua files to put into LFS.");
     return;
@@ -1613,6 +1672,23 @@ async function deployLfsImage(signal?: AbortSignal): Promise<void> {
     vscode.window.showErrorMessage(`node.flashreload failed: ${fr.error}`);
     return;
   }
+
+  // The modules now live in the flash store, so drop any SPIFFS copies (a prior
+  // mirror/sync may have uploaded them) — otherwise `require` would resolve the
+  // SPIFFS `.lc`/`.lua` instead of the LFS version. init.lua stays in SPIFFS.
+  const names = new Set(files.map((f) => path.basename(f).replace(/\.lua$/i, "").toLowerCase()));
+  const port = await ensurePort(cfg);
+  if (port) {
+    const toolOpts = { python: getPythonPath(), port, baud: getConfiguredBaud(cfg), baudUpload: cfg.nodemcu.upload_baud, compile: false, signal };
+    const listed = await listFilesWithFallback(toolOpts, false);
+    for (const f of listed.success ? listed.files ?? [] : []) {
+      if (isLfsBoundRemoteName(f.name, names)) {
+        await removeWithFallback(toolOpts, f.name);
+        outputChannel.appendLine(`Removed SPIFFS copy of LFS module: ${f.name}`);
+      }
+    }
+  }
+
   setStatus("success", `LFS deployed (${files.length} module(s))`);
   vscode.window.showInformationMessage(`LFS image deployed: ${files.length} module(s) now run from flash.`);
 }

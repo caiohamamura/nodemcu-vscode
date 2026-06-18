@@ -46,8 +46,13 @@ export function planMirrorSync(opts: {
   uploadHashes?: Record<string, string>;
   hashFile?: (filePath: string) => string | null;
   changedOnly?: boolean;
+  // Files whose remoteName matches are excluded from the SPIFFS upload set; any
+  // remote copy of them is scheduled for removal instead. Used for LFS-bound Lua
+  // modules, which live in the flash store rather than SPIFFS.
+  excludeRemoteName?: (remoteName: string) => boolean;
 }): MirrorPlan {
-  const localFiles = localFilesForSrc(opts.srcDir);
+  const exclude = opts.excludeRemoteName ?? (() => false);
+  const localFiles = localFilesForSrc(opts.srcDir).filter((file) => !exclude(file.remoteName));
   const remoteNames = new Set(localFiles.map((file) => file.remoteName));
   const upload = opts.changedOnly
     ? localFiles.filter((file) => {

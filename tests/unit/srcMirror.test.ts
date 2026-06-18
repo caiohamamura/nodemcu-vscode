@@ -224,4 +224,17 @@ describe("src mirror planning", () => {
     });
     expect(plan.upload.map((file) => file.remoteName)).toEqual(["lib/wifi.lua"]);
   });
+
+  it("excludeRemoteName drops matches from upload and removes any remote copy (LFS-bound)", () => {
+    // tmp has init.lua + lib/wifi.lua. Treat lib/wifi.lua as LFS-bound.
+    const plan = planMirrorSync({
+      srcDir: tmp,
+      remoteFiles: [{ name: "init.lua", size: 1 }, { name: "lib/wifi.lc", size: 1 }],
+      excludeRemoteName: (name) => /^lib\/wifi\.(lua|lc)$/i.test(name),
+    });
+    // wifi excluded from upload; only init.lua uploads.
+    expect(plan.upload.map((f) => f.remoteName)).toEqual(["init.lua"]);
+    // The stale SPIFFS lib/wifi.lc is scheduled for removal.
+    expect(plan.remove).toContain("lib/wifi.lc");
+  });
 });
