@@ -1,5 +1,25 @@
 import { describe, it, expect } from "vitest";
-import { cmakeConfigureCommand, cmakeBuildCommand, esptoolFlashCommand, normalizeFlashSize } from "../../src/build/toolchain";
+import { cmakeConfigureCommand, cmakeBuildCommand, esptoolFlashCommand, normalizeFlashSize, detectHostCompiler } from "../../src/build/toolchain";
+import { Shell } from "../../src/util/shell";
+
+class WhichShell extends Shell {
+  constructor(private available: Set<string>) { super(); }
+  async which(binary: string): Promise<string | null> {
+    return this.available.has(binary) ? `/usr/bin/${binary}` : null;
+  }
+}
+
+describe("detectHostCompiler", () => {
+  it("returns the first available compiler in preference order (cc > gcc > clang)", async () => {
+    expect(await detectHostCompiler(new WhichShell(new Set(["gcc", "clang"])))).toBe("/usr/bin/gcc");
+    expect(await detectHostCompiler(new WhichShell(new Set(["clang"])))).toBe("/usr/bin/clang");
+    expect(await detectHostCompiler(new WhichShell(new Set(["cc", "gcc"])))).toBe("/usr/bin/cc");
+  });
+
+  it("returns null when no host compiler is on PATH", async () => {
+    expect(await detectHostCompiler(new WhichShell(new Set()))).toBeNull();
+  });
+});
 
 describe("cmakeConfigureCommand", () => {
   it("produces the correct invocation", () => {

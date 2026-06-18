@@ -171,6 +171,34 @@ describe("ssl_buffer_size parsing", () => {
   });
 });
 
+describe("lfs_size parsing / serialization", () => {
+  it("defaults to 0 (LFS disabled) when absent", () => {
+    expect(parseIni("").build.lfs_size).toBe(0);
+  });
+
+  it("reads a hex value from [build]", () => {
+    expect(parseIni("[build]\nlfs_size = 0x20000\n").build.lfs_size).toBe(0x20000);
+  });
+
+  it("reads a decimal value and floors negatives to 0", () => {
+    expect(parseIni("[build]\nlfs_size = 131072\n").build.lfs_size).toBe(131072);
+    expect(parseIni("[build]\nlfs_size = -5\n").build.lfs_size).toBe(0);
+  });
+
+  it("roundtrips through serialize as hex and back", () => {
+    const original = defaultConfig();
+    original.build.lfs_size = 0x20000;
+    const serialized = serializeIni(original);
+    expect(serialized).toMatch(/lfs_size\s*=\s*0x20000/);
+    expect(parseIni(serialized).build.lfs_size).toBe(0x20000);
+  });
+
+  it("serializes 0 when disabled", () => {
+    const cfg = defaultConfig();
+    expect(parseIni(serializeIni(cfg)).build.lfs_size).toBe(0);
+  });
+});
+
 describe("setCModule / setLuaModule", () => {
   it("returns a new config with the c_module toggled", () => {
     const c = defaultConfig();

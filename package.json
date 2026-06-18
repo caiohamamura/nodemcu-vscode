@@ -45,6 +45,9 @@
     "onCommand:nodemcu-vscode.resetDevice",
     "onCommand:nodemcu-vscode.refreshExplorer",
     "onCommand:nodemcu-vscode.syncLuaModules",
+    "onCommand:nodemcu-vscode.enableLfs",
+    "onCommand:nodemcu-vscode.disableLfs",
+    "onCommand:nodemcu-vscode.buildAndDeployLfs",
     "onCommand:nodemcu-vscode.addLuaModule",
     "onCommand:nodemcu-vscode.toggleCModule",
     "onCommand:nodemcu-vscode.regenerateLuaApi",
@@ -172,6 +175,21 @@
         "category": "NodeMCU"
       },
       {
+        "command": "nodemcu-vscode.enableLfs",
+        "title": "Enable LFS (Lua Flash Store)",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.disableLfs",
+        "title": "Disable LFS (Lua Flash Store)",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.buildAndDeployLfs",
+        "title": "Build & Deploy LFS Image",
+        "category": "NodeMCU"
+      },
+      {
         "command": "nodemcu-vscode.addLuaModule",
         "title": "Add Lua Module from Library",
         "category": "NodeMCU"
@@ -223,6 +241,20 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "nodemcu-vscode.enableLfs",
+          "when": "nodemcu.projectValid && nodemcu.hasHostCompiler"
+        },
+        {
+          "command": "nodemcu-vscode.disableLfs",
+          "when": "nodemcu.projectValid && nodemcu.hasHostCompiler"
+        },
+        {
+          "command": "nodemcu-vscode.buildAndDeployLfs",
+          "when": "nodemcu.projectValid && nodemcu.hasHostCompiler"
+        }
+      ],
       "view/item/context": [
         {
           "command": "nodemcu-vscode.toggleCModule",

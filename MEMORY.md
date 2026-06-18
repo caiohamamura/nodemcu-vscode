@@ -115,3 +115,8 @@ Features implemented and verified on real hardware (`COM7`, Silicon Labs CP210x)
 - There is a `src/init.lua` from an old CDP test run. It's unrelated to the live-edit fix.
 - The log file `build_debug.log` has debug `appendFileSync` calls in `doBuild()` — they can be cleaned up later but do not affect functionality.
 - `tests/__mocks__/vscode.ts` is a minimal runtime vscode shim used by `liveEditFs.test.ts`. It is wired via `vitest.config.ts` `resolve.alias`. Only the APIs actually used by `liveEditFs.ts` are implemented.
+
+## Memory files (memory/)
+- [esp8266-tls-heap-budget](memory/esp8266-tls-heap-budget.md) — TLS handshake needs ~28KB peak; big dofile chunks OOM HTTPS; no sjson, parse with patterns.
+- [serial-repl-paste-constraints](memory/serial-repl-paste-constraints.md) — REPL per-line chunks lose locals; do...end wrap; base64 SPIFFS upload; 256B line limit.
+- [lfs-firmware-luaccross-quirks](memory/lfs-firmware-luaccross-quirks.md) — LFS host-tool PATH `--64` clash, lua version match, fork CMakeLists bugs (luac-assert lua53-only; lua53 -f emits no flash image → LFS needs lua51).

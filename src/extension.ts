@@ -14,15 +14,18 @@ import {
   hasDeviceUuid,
   setCModule,
   setLuaModule,
+  isLfsEnabled,
   TLS_ENABLE_SSL_BUFFER_SIZE,
+  DEFAULT_LFS_SIZE,
   type NodemcuConfig,
 } from "./config/nodemcuIni";
 import { IniCompletionItemProvider } from "./config/iniCompletion";
 import { ConfigWatcher } from "./config/configWatcher";
-import { resolveFirmwarePath, luaModulesDir, userModulesHeader } from "./util/paths";
+import { resolveFirmwarePath, luaModulesDir, userModulesHeader, luacCrossPath, lfsImagePath } from "./util/paths";
 import { isCModulesConfigChanged } from "./build/userModulesWriter";
 import { BuildManager } from "./build/buildManager";
-import { ToolchainLocator } from "./build/toolchain";
+import { ToolchainLocator, detectHostCompiler } from "./build/toolchain";
+import { buildLfsImage } from "./build/lfsBuilder";
 import { FlashManager } from "./flash/flashManager";
 import { chooseAutoPort } from "./flash/autoPort";
 import { SerialDiscovery, serialPortDisplayName, type SerialPort } from "./flash/serialDiscovery";
@@ -54,6 +57,9 @@ let extensionContext: vscode.ExtensionContext;
 let serialSessionManager: SerialSessionManager;
 let serialConsoleViewProvider: SerialConsoleViewProvider;
 let serialAutoConnectSuppressed = false;
+// Whether a host C compiler (cc/gcc) is on PATH, which gates the opt-in LFS
+// feature (luac.cross is built by the host compiler). Set once on activate.
+let hasHostCompiler = false;
 
 const SERIAL_AUTO_CONNECT_SUPPRESSED_KEY = "nodemcu.serialAutoConnectSuppressed";
 
@@ -1505,6 +1511,171 @@ async function doResetDevice(signal?: AbortSignal): Promise<void> {
   vscode.window.showInformationMessage(`Reset device successfully.`);
 }
 
+/**
+ * Detect a host C compiler and publish `nodemcu.hasHostCompiler` so the LFS
+ * commands/menus only appear when LFS images can actually be built.
+ */
+async function updateHostCompilerContext(): Promise<void> {
+  let cc: string | null = null;
+  try {
+    cc = await detectHostCompiler(new Shell());
+  } catch {
+    cc = null;
+  }
+  hasHostCompiler = !!cc;
+  void vscode.commands.executeCommand("setContext", "nodemcu.hasHostCompiler", hasHostCompiler);
+  if (cc) {
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Host C compiler detected (${cc}); LFS available.`);
+  }
+}
+
+/**
+ * Compile the project's Lua into an LFS image and load it onto the device.
+ * Sources = enabled local `[lua_modules]` plus `src/*.lua` (init.lua stays the
+ * SPIFFS bootstrap). Assumes the firmware already has the LFS partition and
+ * luac.cross has been built (callers run a build first).
+ */
+async function deployLfsImage(signal?: AbortSignal): Promise<void> {
+  const cfg = getConfigOrNull();
+  const fw = await getFirmwarePath();
+  if (!cfg || !fw) return;
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) return;
+
+  const luac = luacCrossPath(fw);
+  if (!fs.existsSync(luac)) {
+    vscode.window.showErrorMessage(
+      "luac.cross was not built (no host C compiler when the firmware was configured). Cannot build the LFS image.",
+    );
+    return;
+  }
+
+  // Collect Lua sources, de-duplicated by module name (basename). [lua_modules]
+  // wins over a same-named src/ file.
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const addFile = (p: string): void => {
+    const base = path.basename(p).replace(/\.lua$/i, "").toLowerCase();
+    if (seen.has(base)) return;
+    seen.add(base);
+    files.push(p);
+  };
+  const resolved = await resolveAllLuaModules(workspaceRoot, fw, cfg);
+  for (const m of resolved) {
+    if (!m.isRemote && m.exists && m.resolvedLocalPath) addFile(m.resolvedLocalPath);
+  }
+  const srcDir = getConfiguredSrcDir(cfg);
+  if (srcDir && fs.existsSync(srcDir)) {
+    for (const entry of fs.readdirSync(srcDir)) {
+      if (!entry.toLowerCase().endsWith(".lua") || entry.toLowerCase() === "init.lua") continue;
+      addFile(path.join(srcDir, entry));
+    }
+  }
+  if (files.length === 0) {
+    vscode.window.showInformationMessage("No Lua modules or src/*.lua files to put into LFS.");
+    return;
+  }
+
+  setStatus("building", "building LFS image...");
+  const outPath = lfsImagePath(fw);
+  const img = await buildLfsImage(new Shell(), {
+    luacCross: luac,
+    files,
+    outPath,
+    maxSize: cfg.build.lfs_size,
+    onLog: (s) => outputChannel.append(s),
+    onStderr: (s) => outputChannel.append(s),
+    signal,
+  });
+  if (!img.success) {
+    setStatus("error", "LFS image FAILED", img.error);
+    vscode.window.showErrorMessage(`LFS image build failed: ${img.error}`);
+    return;
+  }
+
+  const serial = await focusAndConnectSerialConsole({ force: true });
+  if (!serial) {
+    vscode.window.showErrorMessage("No serial connection available to deploy the LFS image.");
+    return;
+  }
+  setStatus("uploading", "uploading LFS image...");
+  const bytes = fs.readFileSync(outPath);
+  const up = await serial.client.uploadContent(new Uint8Array(bytes), "lfs.img", { signal });
+  if (!up.success) {
+    setStatus("error", "LFS upload FAILED", up.error);
+    vscode.window.showErrorMessage(`Failed to upload LFS image: ${up.error}`);
+    return;
+  }
+  setStatus("flashing", "flash-reloading LFS...");
+  const fr = await serial.client.flashReload("lfs.img");
+  if (!fr.success) {
+    setStatus("error", "flashreload FAILED", fr.error);
+    vscode.window.showErrorMessage(`node.flashreload failed: ${fr.error}`);
+    return;
+  }
+  setStatus("success", `LFS deployed (${files.length} module(s))`);
+  vscode.window.showInformationMessage(`LFS image deployed: ${files.length} module(s) now run from flash.`);
+}
+
+/** Enable LFS (allocate the partition), reflash firmware, then deploy the image. */
+async function doEnableLfs(signal?: AbortSignal): Promise<void> {
+  const cfg = getConfigOrNull();
+  const iniPath = existingIniPath();
+  if (!cfg || !iniPath) {
+    vscode.window.showErrorMessage("No nodemcu.ini found. Run 'NodeMCU: Initialize Project' first.");
+    return;
+  }
+  if (!hasHostCompiler) {
+    vscode.window.showErrorMessage("No host C compiler (cc/gcc) detected; cannot build luac.cross for LFS.");
+    return;
+  }
+  if (!isLfsEnabled(cfg)) {
+    // Re-read at write time so we don't clobber concurrent edits (AGENTS rule).
+    const live = getConfigOrNull() ?? cfg;
+    const next: NodemcuConfig = { ...live, build: { ...live.build, lfs_size: DEFAULT_LFS_SIZE } };
+    cachedConfig = next;
+    saveConfig(iniPath, next);
+    refreshAll();
+  }
+  // Allocating the partition changes the firmware layout, so reflash, then load
+  // the image into the new flash store.
+  await doBuildAndFlash(signal);
+  if (statusEmitter.getState() === "error" || signal?.aborted) return;
+  await deployLfsImage(signal);
+}
+
+/** Disable LFS: free the partition and reflash firmware without LFS. */
+async function doDisableLfs(signal?: AbortSignal): Promise<void> {
+  const cfg = getConfigOrNull();
+  const iniPath = existingIniPath();
+  if (!cfg || !iniPath) return;
+  if (isLfsEnabled(cfg)) {
+    const live = getConfigOrNull() ?? cfg;
+    const next: NodemcuConfig = { ...live, build: { ...live.build, lfs_size: 0 } };
+    cachedConfig = next;
+    saveConfig(iniPath, next);
+    refreshAll();
+  }
+  await doBuildAndFlash(signal);
+}
+
+/** Rebuild + redeploy the LFS image (no firmware reflash when the partition is unchanged). */
+async function doBuildAndDeployLfs(signal?: AbortSignal): Promise<void> {
+  const cfg = getConfigOrNull();
+  if (!cfg) {
+    vscode.window.showErrorMessage("No nodemcu.ini found. Run 'NodeMCU: Initialize Project' first.");
+    return;
+  }
+  if (!isLfsEnabled(cfg)) {
+    vscode.window.showErrorMessage("LFS is not enabled. Run 'NodeMCU: Enable LFS' first.");
+    return;
+  }
+  // Incremental: ensures luac.cross + firmware are current (no-op if up to date).
+  await doBuild(signal);
+  if (statusEmitter.getState() === "error" || signal?.aborted) return;
+  await deployLfsImage(signal);
+}
+
 async function doSyncLuaModules(signal?: AbortSignal): Promise<void> {
   const cfg = getConfigOrNull();
   const fw = await getFirmwarePath();
@@ -2046,6 +2217,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.runFile", commandWithOperation("Run File", doRunFile)),
     vscode.commands.registerCommand("nodemcu-vscode.resetDevice", commandWithOperation("Reset Device", doResetDevice)),
     vscode.commands.registerCommand("nodemcu-vscode.syncLuaModules", commandWithOperation("Sync Lua Modules", doSyncLuaModules)),
+    vscode.commands.registerCommand("nodemcu-vscode.enableLfs", commandWithOperation("Enable LFS", doEnableLfs)),
+    vscode.commands.registerCommand("nodemcu-vscode.disableLfs", commandWithOperation("Disable LFS", doDisableLfs)),
+    vscode.commands.registerCommand("nodemcu-vscode.buildAndDeployLfs", commandWithOperation("Build & Deploy LFS", doBuildAndDeployLfs)),
     vscode.commands.registerCommand("nodemcu-vscode.acceptLuaModuleCompletion", commandWithOperation("Accept Lua Module", doAcceptLuaModuleCompletion)),
     vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", doOpenSerialMonitor),
     vscode.commands.registerCommand("nodemcu-vscode.disconnectSerialSession", doDisconnectSerialSession),
@@ -2074,6 +2248,7 @@ export function activate(context: vscode.ExtensionContext): void {
     )
   );
 
+  void updateHostCompilerContext();
 }
 
 export async function deactivate(): Promise<void> {

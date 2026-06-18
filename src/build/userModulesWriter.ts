@@ -167,3 +167,35 @@ export function writeUserConfigSsl(headerPath: string, enabled: boolean, bufferS
   return true;
 }
 
+/**
+ * Toggle the LFS (Lua Flash Store) partition size in `app/include/user_config.h`.
+ * The firmware ships `LUA_FLASH_STORE` commented out (the `#ifndef` fallback then
+ * defines it as `0x0` = disabled). When `sizeBytes > 0` we activate the user line
+ * with the requested partition size; when `0` we comment it back out so the
+ * fallback restores the disabled default. Pure string transform (unit-testable),
+ * touching only the single user-config `#define LUA_FLASH_STORE` line. The
+ * `#  define LUA_FLASH_STORE 0x0` fallback (note the space after `#`) is left
+ * alone — the regex requires a contiguous `#define`, so it never matches there.
+ * `LUA_INIT_STRING` is intentionally not touched: init.lua stays the SPIFFS
+ * bootstrap that requires LFS modules.
+ */
+export function setUserConfigLfs(content: string, sizeBytes: number): string {
+  const lfsRe = /^[ \t]*\/*[ \t]*#define[ \t]+LUA_FLASH_STORE\b.*$/m;
+  if (!lfsRe.test(content)) return content;
+  if (sizeBytes > 0) {
+    const size = Math.floor(sizeBytes);
+    return content.replace(lfsRe, `#define LUA_FLASH_STORE                   0x${size.toString(16)}`);
+  }
+  return content.replace(lfsRe, "//#define LUA_FLASH_STORE                   0x10000");
+}
+
+/** Apply {@link setUserConfigLfs} to a file on disk. Returns true if it changed. */
+export function writeUserConfigLfs(headerPath: string, sizeBytes: number): boolean {
+  if (!fs.existsSync(headerPath)) return false;
+  const before = fs.readFileSync(headerPath, "utf-8");
+  const after = setUserConfigLfs(before, sizeBytes);
+  if (after === before) return false;
+  fs.writeFileSync(headerPath, after, "utf-8");
+  return true;
+}
+

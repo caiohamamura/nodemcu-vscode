@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Shell } from "../util/shell";
 import { ToolchainLocator, cmakeConfigureCommand, cmakeBuildCommand } from "./toolchain";
-import { writeUserModulesHeader, diffSelectedModules, readSelectedModules, writeUserConfigSsl, isTlsEnabled } from "./userModulesWriter";
+import { writeUserModulesHeader, diffSelectedModules, readSelectedModules, writeUserConfigSsl, writeUserConfigLfs, isTlsEnabled } from "./userModulesWriter";
 import { parseProblems, summarize } from "./outputParser";
 import { appModulesDir, defaultBuildDir, userModulesHeader, userConfigHeader, binOutput, toolchainBinDirs } from "../util/paths";
 import type { NodemcuConfig } from "../config/nodemcuIni";
@@ -47,6 +47,10 @@ export class BuildManager {
     // Keep CLIENT_SSL_ENABLE / SSL_BUFFER_SIZE in user_config.h in lockstep with
     // the tls module so enabling tls alone yields a working HTTPS/TLS firmware.
     const sslChanged = writeUserConfigSsl(userConfigHeader(ctx.firmwarePath), isTlsEnabled(ctx.config), ctx.config.build.ssl_buffer_size);
+    // Allocating/freeing the LFS partition (LUA_FLASH_STORE) changes the firmware
+    // layout, so a change here forces a reconfigure + reflash just like the SSL
+    // toggle above.
+    const lfsChanged = writeUserConfigLfs(userConfigHeader(ctx.firmwarePath), ctx.config.build.lfs_size);
     const buildDir = defaultBuildDir(ctx.firmwarePath);
     const modulesSrcDir = appModulesDir(ctx.firmwarePath);
     // A build dir counts as "configured" only if CMake finished the generate
@@ -61,7 +65,14 @@ export class BuildManager {
       fs.existsSync(path.join(buildDir, "build.ninja")) ||
       fs.existsSync(path.join(buildDir, "Makefile"));
     const buildDirMissing = !cacheExists || !generatorFileExists;
-    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0 || sslChanged;
+    // The Lua flavour (5.1/5.3, integral/64-bit) is a configure-time -D flag, not
+    // a source edit, so a change to it would otherwise be skipped — leaving the
+    // firmware (and the luac.cross host tool, which follows -DLUA) built for the
+    // previous Lua version. A mismatched luac.cross silently emits images the
+    // device's LFS loader rejects, so treat a Lua-flavour change as needing a
+    // reconfigure.
+    const luaFlavourChanged = !buildDirMissing && this.luaFlavourChanged(buildDir, ctx.config);
+    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0 || sslChanged || lfsChanged || luaFlavourChanged;
     if (needsReconfigure) {
       // The firmware is a CMake superbuild: the real compile runs inside an
       // ExternalProject whose build step is gated by stamp files that the
@@ -146,6 +157,7 @@ export class BuildManager {
         luaNumberIntegral: ctx.config.nodemcu.lua_number_integral,
         luaNumber64bits: ctx.config.nodemcu.lua_number_64bits,
         verbose: ctx.verbose,
+        buildHostTools: ctx.config.build.lfs_size > 0,
       });
       let configureResult = await this.shell.run(configureCmd.command, configureCmd.args, {
         cwd: configureCmd.cwd,
@@ -181,12 +193,42 @@ export class BuildManager {
       buildEnv.PATH = `${tcDirs.join(path.delimiter)}${path.delimiter}${buildEnv.PATH || ""}`;
     }
 
+    // When LFS is enabled the build also produces the host tools (luac.cross,
+    // spiffsimg). These compile with the *host* gcc, which spawns `as`/`ld` by
+    // bare name; if the xtensa toolchain bin dirs are on PATH (they must be for
+    // the firmware ExternalProject) the host compile grabs the xtensa assembler
+    // and dies with "as: unrecognized option '--64'". So build the host-tool
+    // targets first with the host-clean `env`; the later firmware build then
+    // finds them up to date and never reinvokes `as` for them.
+    if (ctx.config.build.lfs_size > 0) {
+      for (const target of ["luac.cross", "spiffsimg"]) {
+        const hostToolCmd = cmakeBuildCommand({ cmake, buildDir, parallel: ctx.parallel, jobCount: ctx.jobCount, verbose: ctx.verbose, target });
+        // Tolerate failure/absence here (e.g. host compiler disabled): the main
+        // build below is the real gate and will surface genuine errors.
+        await this.shell.run(hostToolCmd.command, hostToolCmd.args, {
+          cwd: hostToolCmd.cwd,
+          env,
+          onStdout: ctx.onLog,
+          onStderr: ctx.onStderr,
+          signal: ctx.signal,
+        });
+      }
+    }
+
+    // Build the firmware + flash image via the `build_all` target rather than the
+    // default `all`. `all` also (re)compiles the host tools (luac.cross,
+    // spiffsimg) under the xtensa-augmented PATH — and the firmware-rebuild mtime
+    // bump above touches app/modules/*.c, which are shared with luac.cross, so
+    // `all` would rebuild those host-tool objects with the wrong assembler
+    // ("as: unrecognized option '--64'"). `build_all` depends only on the bin
+    // image → firmware, leaving the host tools to the LFS-only pre-build above.
     const buildCmd = cmakeBuildCommand({
       cmake,
       buildDir,
       parallel: ctx.parallel,
       jobCount: ctx.jobCount,
       verbose: ctx.verbose,
+      target: "build_all",
     });
     const buildResult = await this.shell.run(buildCmd.command, buildCmd.args, {
       cwd: buildCmd.cwd,
@@ -207,6 +249,30 @@ export class BuildManager {
       needsReconfigure,
       modulesChanged: diff,
     };
+  }
+
+  /**
+   * True when the configured Lua flavour differs from what the existing
+   * CMakeCache.txt was generated with. Reads the cached -D values directly so a
+   * `lua_version` (or number-mode) switch forces a reconfigure + rebuild.
+   */
+  private luaFlavourChanged(buildDir: string, config: NodemcuConfig): boolean {
+    const cache = path.join(buildDir, "CMakeCache.txt");
+    let text = "";
+    try { text = fs.readFileSync(cache, "utf-8"); } catch { return false; }
+    const cachedVar = (name: string): string | null => {
+      const m = new RegExp(`^${name}(?::[^=]*)?=(.*)$`, "m").exec(text);
+      return m ? m[1].trim() : null;
+    };
+    const cachedLua = cachedVar("LUA");
+    if (cachedLua !== null && cachedLua !== config.nodemcu.lua_version) return true;
+    const boolOn = (v: string | null): boolean => v === "ON" || v === "TRUE" || v === "1";
+    // These are only set when ON, so only treat a true→cached-true mismatch as a change.
+    const cachedIntegral = cachedVar("LUA_NUMBER_INTEGRAL");
+    if (cachedIntegral !== null && boolOn(cachedIntegral) !== config.nodemcu.lua_number_integral) return true;
+    const cached64 = cachedVar("LUA_NUMBER_64BITS");
+    if (cached64 !== null && boolOn(cached64) !== config.nodemcu.lua_number_64bits) return true;
+    return false;
   }
 
   private binPaths(firmwarePath: string): { bin0: string; bin1: string } {

@@ -305,6 +305,60 @@ The `resources/templates/nodemcu.ini` is the bootstrap template. The default
 template currently still has the legacy `firmware_path = ../nodemcu-firmware`
 — this is a known wart; `extension.ts:170` strips it on read.
 
+### 5.5 LFS (Lua Flash Store) — opt-in, gated on a host C compiler
+
+LFS stores Lua modules in flash and runs them with near-zero RAM overhead. The
+extension exposes it only when a host C compiler is found (`detectHostCompiler`
+in `toolchain.ts` → context key `nodemcu.hasHostCompiler`), because the LFS image
+is built by `luac.cross`, a host tool compiled by `cc`/`gcc` (the firmware builds
+it via `BUILD_HOST_TOOLS`).
+
+- **Config**: `[build] lfs_size` (hex like `0x20000` or decimal; `0` = off,
+  default off). `DEFAULT_LFS_SIZE = 0x20000` (128 KB) is written by **Enable LFS**.
+  `isLfsEnabled(cfg)` is the predicate.
+- **Build side** (`buildManager` + `userModulesWriter.setUserConfigLfs`): a nonzero
+  `lfs_size` writes `LUA_FLASH_STORE` into `user_config.h` (a partition change →
+  forces reconfigure + reflash, like the SSL toggle). `cmakeConfigureCommand`
+  passes `-DBUILD_HOST_TOOLS=ON` only when LFS is on. The host tools
+  (`luac.cross`, `spiffsimg`) are pre-built with a **host-clean PATH** before the
+  firmware build — otherwise the host gcc grabs the xtensa `as` off PATH and dies
+  with `as: unrecognized option '--64'`.
+- **Image** (`build/lfsBuilder.ts`): `luac.cross -f -m <size> -o lfs.img <files>`
+  over the enabled local `[lua_modules]` + `src/*.lua` (init.lua stays the SPIFFS
+  bootstrap). Path helpers `luacCrossPath` / `lfsImagePath` in `util/paths.ts`.
+- **Deploy** (`extension.ts deployLfsImage` + `SerialDeviceClient.flashReload`):
+  upload `lfs.img`, then `node.flashreload("lfs.img")` (reboots into the new
+  flash store). Commands: `enableLfs`, `disableLfs`, `buildAndDeployLfs` (palette,
+  `when: nodemcu.hasHostCompiler`). On-device, LFS modules are accessed via
+  `node.flashindex(name)` / `node.LFS.get(name)` (NodeMCU's `require` does not
+  always wire an LFS searcher).
+- **Lua version must match.** `luac.cross` follows `-DLUA`, so the firmware and
+  `luac.cross` must be the same Lua flavour or the device's LFS loader rejects the
+  image. `BuildManager.luaFlavourChanged` reads the CMakeCache and forces a
+  reconfigure when `lua_version`/number-mode changes so they can't drift.
+- **Firmware-fork fix required (in `caiohamamura/nodemcu-firmware`, NOT this repo).**
+  The root `CMakeLists.txt` `ExternalProject_Add(firmware ...)` must forward the
+  Lua flags to the firmware build:
+  ```cmake
+  -DLUA=${LUA}
+  -DLUA_NUMBER_INTEGRAL=${LUA_NUMBER_INTEGRAL}
+  -DLUA_NUMBER_64BITS=${LUA_NUMBER_64BITS}
+  ```
+  Without this the firmware always uses the `parse_flags.cmake` default `LUA=51`
+  while the outer `luac.cross` follows `-DLUA`, so a lua53 image is rejected by a
+  lua51 firmware (`read error on LFS image file`). With the fix, the project
+  default lua53 works end to end (hardware-verified 2026-06-18: device boots
+  `Lua 5.3.6`, module runs from flash). Note: the obsolete
+  `nodemcu-vscode-luac-assert.c` shim (an artifact of older managed-firmware
+  patching; lua53 no longer references `luaL_assertfail`) must NOT be added to
+  `tools/luac_cross/CMakeLists.txt` for lua51 — it duplicates lua51's symbol.
+- **Build target.** `BuildManager` builds the firmware via the `build_all` target
+  (firmware + bin image), NOT the default `all`. `all` recompiles the host tools
+  under the xtensa-augmented PATH, and the firmware-rebuild mtime bump touches
+  `app/modules/*.c` (shared with `luac.cross`) → those host-tool objects rebuild
+  with the xtensa `as` and fail (`--64`). The LFS host tools are built separately
+  with a host-clean PATH.
+
 ### 5.3 Managed firmware
 
 - URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/v3.1.0.zip`
@@ -404,6 +458,17 @@ template currently still has the legacy `firmware_path = ../nodemcu-firmware`
     ESP8266: `1024` → 0/10 TLS successes, `16384` → TLS succeeds. The firmware
     build self-downloads its xtensa toolchain; a fresh flash formats SPIFFS on
     first boot, so the script upload waits + retries.
+  - `lfs_e2e.test.ts` — CDP-free; builds firmware with an LFS partition
+    (`[build] lfs_size`) + `luac.cross`, flashes, compiles a sample module into an
+    LFS image (`buildLfsImage`), uploads it, `node.flashreload`s, and asserts the
+    module is listed by `node.LFS.list()`, resolves via `node.flashindex` (returns
+    a function), executes (`ping()` → marker) and is NOT a SPIFFS file. Needs
+    `NODEMCU_VSCODE_E2E_HARDWARE=1`; reuse a built firmware checkout via
+    `NODEMCU_VSCODE_LFS_FIRMWARE_PATH` to skip the managed download. Defaults to
+    `lua_version = 53` (override with `NODEMCU_VSCODE_LFS_LUA=51`); requires the
+    firmware-fork `-DLUA` forwarding fix in §5.5. Verified on a real ESP8266 for
+    both lua53 and lua51: device boots the matching Lua version and the module
+    runs from flash (`pong-from-lfs`). Run with linuxbrew on PATH for cmake.
 
 ### 7.2 vitest config
 
@@ -418,6 +483,7 @@ fight over `cwd` / `process.env` mutations.
 | `NODEMCU_VSCODE_NODEMCU_TOOL` | `NodemcuTool.command()` | Override path to the `nodemcu-tool` entry script. Used for test injection. |
 | `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` | `SerialDiscovery.list()` | JSON array (`["/dev/ttyUSB0"]` or `[{path, manufacturer, ...}]`) returned in place of `serialport.SerialPort.list()`. |
 | `NODEMCU_VSCODE_FAKE_NODMCU_TOOL_STATE` | The bundled fake `nodemcu-tool.js` only | State dir for the fake device's "filesystem". |
+| `NODEMCU_VSCODE_LFS_FIRMWARE_PATH` | `lfs_e2e.test.ts` | Reuse an already-built firmware checkout instead of downloading the managed firmware. |
 
 ---
 

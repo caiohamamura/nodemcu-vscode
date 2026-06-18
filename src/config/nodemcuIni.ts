@@ -40,7 +40,7 @@ export interface NodemcuConfig {
   c_modules: Record<string, boolean>;
   lua_modules: Record<string, string>;
   flash: { extra_files: FlashExtraFile[] };
-  build: { parallel: boolean; verbose: boolean; ssl_buffer_size: number };
+  build: { parallel: boolean; verbose: boolean; ssl_buffer_size: number; lfs_size: number };
 }
 
 // mbed TLS record buffer size used when the tls module enables CLIENT_SSL. The
@@ -53,6 +53,11 @@ export const DEFAULT_SSL_BUFFER_SIZE = 16384;
 // leaving enough heap on the device (see TLS heap budget notes); the user can
 // still raise it to 16384 afterwards.
 export const TLS_ENABLE_SSL_BUFFER_SIZE = 8192;
+
+// LFS (Lua Flash Store) partition size written into user_config.h
+// (LUA_FLASH_STORE) and [build] lfs_size when the user enables LFS. 0x20000
+// (128 KB) holds a typical set of project Lua modules; 0 disables LFS.
+export const DEFAULT_LFS_SIZE = 0x20000;
 
 const DEFAULT_NODEMCU: NodemcuSection = {
   lua_version: "53",
@@ -77,7 +82,7 @@ export function defaultConfig(): NodemcuConfig {
     c_modules: {},
     lua_modules: {},
     flash: { extra_files: [] },
-    build: { parallel: true, verbose: false, ssl_buffer_size: DEFAULT_SSL_BUFFER_SIZE },
+    build: { parallel: true, verbose: false, ssl_buffer_size: DEFAULT_SSL_BUFFER_SIZE, lfs_size: 0 },
   };
 }
 
@@ -166,6 +171,9 @@ export function parseIni(content: string): NodemcuConfig {
   config.build.verbose = coerceBool(b.verbose, config.nodemcu.verbose);
   const sslBuf = coerceNumber(b.ssl_buffer_size, DEFAULT_SSL_BUFFER_SIZE);
   config.build.ssl_buffer_size = sslBuf > 0 ? Math.floor(sslBuf) : DEFAULT_SSL_BUFFER_SIZE;
+  // lfs_size accepts hex ("0x20000") or decimal; 0/negative means LFS disabled.
+  const lfsSize = coerceNumber(b.lfs_size, 0);
+  config.build.lfs_size = lfsSize > 0 ? Math.floor(lfsSize) : 0;
 
   return config;
 }
@@ -210,6 +218,7 @@ export function serializeIni(config: NodemcuConfig): string {
     parallel: config.build.parallel,
     verbose: config.build.verbose,
     ssl_buffer_size: config.build.ssl_buffer_size,
+    lfs_size: config.build.lfs_size > 0 ? `0x${config.build.lfs_size.toString(16)}` : 0,
   };
   return ini.stringify(out);
 }
@@ -269,6 +278,10 @@ export function setLuaModule(config: NodemcuConfig, name: string, source: string
     ...config,
     lua_modules: { ...config.lua_modules, [name]: source },
   };
+}
+
+export function isLfsEnabled(config: NodemcuConfig): boolean {
+  return config.build.lfs_size > 0;
 }
 
 export function getLuaModuleEntries(config: NodemcuConfig): LuaModuleEntry[] {

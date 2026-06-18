@@ -5,7 +5,26 @@ export interface ToolchainInfo {
   python: string;
   make?: string;
   ninja?: string;
+  hostCC?: string;
   generator: "Ninja" | "Unix Makefiles" | "NMake Makefiles" | "MinGW Makefiles" | "MSYS Makefiles" | "Unknown";
+}
+
+// Candidate host C compiler names, in preference order. The managed firmware's
+// CMake builds the optional host tools (luac.cross, spiffsimg) when any of these
+// is found at configure time (BUILD_HOST_TOOLS=AUTO -> check_language(C)).
+const HOST_CC_CANDIDATES = ["cc", "gcc", "clang"];
+
+/**
+ * Locate a host C compiler used to build `luac.cross` (the LFS image compiler).
+ * Non-fatal: returns the first compiler found on PATH, or null. Used to gate the
+ * opt-in LFS feature without forcing a full cmake-bearing toolchain probe.
+ */
+export async function detectHostCompiler(shell: Shell): Promise<string | null> {
+  for (const candidate of HOST_CC_CANDIDATES) {
+    const found = await shell.which(candidate);
+    if (found) return found;
+  }
+  return null;
 }
 
 export class ToolchainLocator {
@@ -26,7 +45,8 @@ export class ToolchainLocator {
     const make = await this.shell.which("make");
     const generator = await this.detectGenerator(ninja, make);
     if (!python) throw new Error("Python not found. Install Python 3 and ensure it is on PATH.");
-    return { cmake, python, ninja: ninja ?? undefined, make: make ?? undefined, generator };
+    const hostCC = await detectHostCompiler(this.shell);
+    return { cmake, python, ninja: ninja ?? undefined, make: make ?? undefined, hostCC: hostCC ?? undefined, generator };
   }
 
   private async locatePython(): Promise<string> {
@@ -70,12 +90,18 @@ export function cmakeConfigureCommand(opts: {
   luaNumberIntegral: boolean;
   luaNumber64bits: boolean;
   verbose: boolean;
+  /** Build the optional host tools (luac.cross, spiffsimg). Needed for LFS. */
+  buildHostTools?: boolean;
 }): CommandSpec {
   const args: string[] = [
     "-S", opts.firmwarePath,
     "-B", opts.buildDir,
     "-G", opts.generator,
     `-DLUA=${opts.luaVersion}`,
+    // Only build the host tools when LFS needs luac.cross. Building them as part
+    // of a normal firmware build risks the host compiler picking up the xtensa
+    // assembler from PATH ("as: unrecognized option '--64'").
+    `-DBUILD_HOST_TOOLS=${opts.buildHostTools ? "ON" : "OFF"}`,
   ];
   if (opts.generator === "Ninja" && opts.ninja) {
     args.push(`-DCMAKE_MAKE_PROGRAM=${opts.ninja}`);

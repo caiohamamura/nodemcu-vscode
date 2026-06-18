@@ -11,6 +11,8 @@ import {
   isTlsEnabled,
   setUserConfigSsl,
   writeUserConfigSsl,
+  setUserConfigLfs,
+  writeUserConfigLfs,
 } from "../../src/build/userModulesWriter";
 import { defaultConfig } from "../../src/config/nodemcuIni";
 
@@ -136,6 +138,49 @@ describe("user_config.h SSL toggling for TLS", () => {
 
   it("writeUserConfigSsl is a no-op when the file is missing", () => {
     expect(writeUserConfigSsl(path.join(tmp, "nope.h"), true)).toBe(false);
+  });
+});
+
+describe("user_config.h LFS partition toggling", () => {
+  // Mirrors the real header: a commented user line plus the #ifndef fallback
+  // (note the space after # in "#  define", which must NOT be matched).
+  const sample = [
+    "//#define LUA_FLASH_STORE                   0x10000",
+    "",
+    "#ifndef LUA_FLASH_STORE",
+    "#  define LUA_FLASH_STORE                 0x0",
+    "#endif",
+  ].join("\n") + "\n";
+
+  it("activates the user LUA_FLASH_STORE line with the requested size", () => {
+    const out = setUserConfigLfs(sample, 0x20000);
+    expect(out).toMatch(/^#define LUA_FLASH_STORE\s+0x20000$/m);
+    // The #ifndef fallback line is untouched.
+    expect(out).toMatch(/^#\s+define LUA_FLASH_STORE\s+0x0$/m);
+  });
+
+  it("comments the line back out when size is 0 (fallback restores disabled)", () => {
+    const enabled = setUserConfigLfs(sample, 0x20000);
+    const out = setUserConfigLfs(enabled, 0);
+    expect(out).toMatch(/^\/\/#define LUA_FLASH_STORE\s+0x10000$/m);
+    expect(out).not.toMatch(/^#define LUA_FLASH_STORE\s+0x20000$/m);
+  });
+
+  it("leaves content unchanged when no user LUA_FLASH_STORE line exists", () => {
+    const noLine = "#define SOMETHING 1\n";
+    expect(setUserConfigLfs(noLine, 0x20000)).toBe(noLine);
+  });
+
+  it("writeUserConfigLfs reports whether the file changed and is idempotent", () => {
+    const headerPath = path.join(tmp, "user_config.h");
+    fs.writeFileSync(headerPath, sample, "utf-8");
+    expect(writeUserConfigLfs(headerPath, 0x20000)).toBe(true);
+    expect(writeUserConfigLfs(headerPath, 0x20000)).toBe(false);
+    expect(fs.readFileSync(headerPath, "utf-8")).toMatch(/^#define LUA_FLASH_STORE\s+0x20000$/m);
+  });
+
+  it("writeUserConfigLfs is a no-op when the file is missing", () => {
+    expect(writeUserConfigLfs(path.join(tmp, "nope.h"), 0x20000)).toBe(false);
   });
 });
 

@@ -45,6 +45,21 @@ export function binOutput(firmwarePath: string): string {
   return path.join(firmwarePath, "bin");
 }
 
+/**
+ * Path to the `luac.cross` host tool produced by the firmware build when a host
+ * C compiler was detected at configure time (BUILD_HOST_TOOLS). Lives in the
+ * outer build dir, not the firmware ExternalProject.
+ */
+export function luacCrossPath(firmwarePath: string): string {
+  const exe = process.platform === "win32" ? "luac.cross.exe" : "luac.cross";
+  return path.join(defaultBuildDir(firmwarePath), "tools", "luac_cross", exe);
+}
+
+/** Output path for the generated LFS image (uploaded to the device + flashreload'd). */
+export function lfsImagePath(firmwarePath: string): string {
+  return path.join(defaultBuildDir(firmwarePath), "lfs.img");
+}
+
 export function cModuleNameFromFile(filename: string): string {
   return filename.replace(/\.c$/i, "").toLowerCase();
 }
