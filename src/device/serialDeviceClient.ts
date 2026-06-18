@@ -247,6 +247,29 @@ export class SerialDeviceClient {
     }
   }
 
+  /**
+   * Load an LFS image already present in SPIFFS into the flash store via
+   * `node.flashreload(name)`. On a valid image the device reboots (we wait for
+   * the boot banner + prompt); a bad image prints an error and does NOT reboot,
+   * which surfaces as a timeout/Lua error here.
+   */
+  async flashReload(remoteName: string): Promise<Result> {
+    try {
+      validateRemoteName(remoteName);
+      await this.session.runExclusive(`Flash-reload ${remoteName}`, async (cursor) => {
+        await this.ensurePrompt(cursor);
+        // node.flashreload restarts on success, so don't wait for a prompt after
+        // the command itself; wait for the reboot instead.
+        await this.session.write(`node.flashreload(${luaString(remoteName)})\r\n`);
+        await waitForBoot(this.session, cursor, BOOT_TIMEOUT_MS);
+        await waitForLuaPrompt(this.session, cursor, PROMPT_TIMEOUT_MS);
+      });
+      return { success: true };
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
   async mkfs(): Promise<Result> {
     try {
         await this.session.runExclusive("Format filesystem", async (cursor) => {
