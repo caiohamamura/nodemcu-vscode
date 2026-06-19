@@ -223,7 +223,16 @@ jobs:
           if [ "$EXT" = "tar.gz" ]; then
             tar -C "$STAGE" -czf "$ASSET" "$BIN_BASE"
           else
-            powershell -NoProfile -Command "Compress-Archive -Path '$STAGE/$BIN_BASE' -DestinationPath '$ASSET'"
+            # PowerShell Compress-Archive needs native Windows paths
+            # (e.g. D:\a\...\tmp\xxx\luac.cross.exe), not the POSIX-style
+            # /tmp/... produced by Git Bash mktemp. Convert the stage
+            # path with cygpath -w and pass everything through env vars
+            # to avoid the bash <-> PowerShell quoting minefield.
+            WIN_STAGE=$(cygpath -w "$STAGE")
+            WIN_ASSET=$(cygpath -w "$(pwd)/$ASSET")
+            export WIN_STAGE WIN_ASSET BIN_BASE
+            powershell -NoProfile -Command \
+              'Compress-Archive -Path (Join-Path $env:WIN_STAGE $env:BIN_BASE) -DestinationPath $env:WIN_ASSET -Force'
           fi
           ls -la "$ASSET"
           echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
