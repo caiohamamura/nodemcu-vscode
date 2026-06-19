@@ -305,13 +305,32 @@ The `resources/templates/nodemcu.ini` is the bootstrap template. The default
 template currently still has the legacy `firmware_path = ../nodemcu-firmware`
 — this is a known wart; `extension.ts:170` strips it on read.
 
-### 5.5 LFS (Lua Flash Store) — opt-in, gated on a host C compiler
+### 5.5 LFS (Lua Flash Store) — opt-in; luac.cross from build or pre-built
 
 LFS stores Lua modules in flash and runs them with near-zero RAM overhead. The
-extension exposes it only when a host C compiler is found (`detectHostCompiler`
-in `toolchain.ts` → context key `nodemcu.hasHostCompiler`), because the LFS image
-is built by `luac.cross`, a host tool compiled by `cc`/`gcc` (the firmware builds
-it via `BUILD_HOST_TOOLS`).
+LFS image is compiled by `luac.cross`, a host tool. The extension obtains it in
+one of two ways:
+
+1. **Build from source** (existing path): when a host C compiler (`cc`/`gcc`) is
+   detected, `BuildManager` compiles `luac.cross` from the firmware source with
+   `-DBUILD_HOST_TOOLS=ON`. The host tools are pre-built with a **host-clean PATH**
+   before the firmware build — otherwise the host gcc grabs the xtensa `as` off
+   PATH and dies with `as: unrecognized option '--64'`.
+2. **Pre-built binary** (new path): `ensurePrebuiltLuacCross` in
+   `src/firmware/managedFirmware.ts` downloads the correct binary for the current
+   platform from a GitHub release (`LUAC_CROSS_RELEASE_TAG = "luac-cross-v3.1.0"`).
+   Asset names: `luac.cross[-linux-x64-lua53]` etc. Cached at
+   `<globalStorageUri>/luac_cross/<luaVersion>/luac.cross[.exe]`.
+   `prebuiltLuacCrossPath(storageRoot, luaVersion)` in `util/paths.ts` is the
+   accessor. `updateHostCompilerContext()` checks both paths and sets
+   `nodemcu.hasHostCompiler` true if either is available.
+
+`deployLfsImage()` prefers the firmware-build binary; if absent, downloads the
+pre-built one on demand (first LFS use), then falls back to an error message if
+both sources fail. **For the pre-built binaries to be available, CI must build
+`luac.cross` for each platform × Lua version and upload as release assets to the
+`luac-cross-v3.1.0` tag in `caiohamamura/nodemcu-firmware`.** Until those assets
+exist, users without a host compiler will see a download-failed error.
 
 - **Config**: `[build] lfs_size` (hex like `0x20000` or decimal; `0` = off,
   default off). `DEFAULT_LFS_SIZE = 0x20000` (128 KB) is written by **Enable LFS**.
@@ -319,10 +338,7 @@ it via `BUILD_HOST_TOOLS`).
 - **Build side** (`buildManager` + `userModulesWriter.setUserConfigLfs`): a nonzero
   `lfs_size` writes `LUA_FLASH_STORE` into `user_config.h` (a partition change →
   forces reconfigure + reflash, like the SSL toggle). `cmakeConfigureCommand`
-  passes `-DBUILD_HOST_TOOLS=ON` only when LFS is on. The host tools
-  (`luac.cross`, `spiffsimg`) are pre-built with a **host-clean PATH** before the
-  firmware build — otherwise the host gcc grabs the xtensa `as` off PATH and dies
-  with `as: unrecognized option '--64'`.
+  passes `-DBUILD_HOST_TOOLS=ON` only when LFS is on.
 - **Image** (`build/lfsBuilder.ts`): `luac.cross -f -m <size> -o lfs.img <files>`
   over the enabled local `[lua_modules]` + `src/*.lua` (init.lua stays the SPIFFS
   bootstrap). Path helpers `luacCrossPath` / `lfsImagePath` in `util/paths.ts`.

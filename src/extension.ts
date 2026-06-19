@@ -21,7 +21,7 @@ import {
 } from "./config/nodemcuIni";
 import { IniCompletionItemProvider } from "./config/iniCompletion";
 import { ConfigWatcher } from "./config/configWatcher";
-import { resolveFirmwarePath, luaModulesDir, userModulesHeader, luacCrossPath, lfsImagePath } from "./util/paths";
+import { resolveFirmwarePath, luaModulesDir, userModulesHeader, luacCrossPath, lfsImagePath, prebuiltLuacCrossPath } from "./util/paths";
 import { isCModulesConfigChanged } from "./build/userModulesWriter";
 import { BuildManager } from "./build/buildManager";
 import { ToolchainLocator, detectHostCompiler } from "./build/toolchain";
@@ -40,7 +40,7 @@ import { listLuaModulesFromFirmware, listCModules, selectMainFileForConfig, type
 import { createLuaModuleCompletionItem } from "./luaPicker/luaModuleCompletion";
 import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
 import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
-import { ensureManagedFirmware } from "./firmware/managedFirmware";
+import { ensureManagedFirmware, ensurePrebuiltLuacCross } from "./firmware/managedFirmware";
 import { ensureCMake, ensureNinja } from "./tools/managedTools";
 import { SerialSessionManager } from "./serial/serialSessionManager";
 import { SerialConsoleViewProvider } from "./serial/serialConsoleView";
@@ -57,8 +57,9 @@ let extensionContext: vscode.ExtensionContext;
 let serialSessionManager: SerialSessionManager;
 let serialConsoleViewProvider: SerialConsoleViewProvider;
 let serialAutoConnectSuppressed = false;
-// Whether a host C compiler (cc/gcc) is on PATH, which gates the opt-in LFS
-// feature (luac.cross is built by the host compiler). Set once on activate.
+// Whether luac.cross is available: either a host C compiler (cc/gcc) is on PATH
+// so we can build it, OR a pre-built binary has been cached. Gates the opt-in
+// LFS commands. Set on activate and re-checked after a pre-built download.
 let hasHostCompiler = false;
 
 const SERIAL_AUTO_CONNECT_SUPPRESSED_KEY = "nodemcu.serialAutoConnectSuppressed";
@@ -1541,8 +1542,10 @@ async function doResetDevice(signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Detect a host C compiler and publish `nodemcu.hasHostCompiler` so the LFS
- * commands/menus only appear when LFS images can actually be built.
+ * Detect whether LFS image building is available: either a host C compiler is
+ * on PATH (builds luac.cross from source) or a pre-built binary is already
+ * cached in global storage. Publishes `nodemcu.hasHostCompiler` so the LFS
+ * commands/menus appear accordingly.
  */
 async function updateHostCompilerContext(): Promise<void> {
   let cc: string | null = null;
@@ -1551,10 +1554,15 @@ async function updateHostCompilerContext(): Promise<void> {
   } catch {
     cc = null;
   }
-  hasHostCompiler = !!cc;
+  // Also check if a pre-built binary is cached for any Lua version.
+  const storageRoot = extensionContext.globalStorageUri.fsPath;
+  const hasCached = (["51", "53"] as const).some((v) => fs.existsSync(prebuiltLuacCrossPath(storageRoot, v)));
+  hasHostCompiler = !!cc || hasCached;
   void vscode.commands.executeCommand("setContext", "nodemcu.hasHostCompiler", hasHostCompiler);
   if (cc) {
     outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Host C compiler detected (${cc}); LFS available.`);
+  } else if (hasCached) {
+    outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Pre-built luac.cross cached; LFS available.`);
   }
 }
 
@@ -1621,12 +1629,36 @@ async function deployLfsImage(signal?: AbortSignal): Promise<void> {
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
 
-  const luac = luacCrossPath(fw);
+  let luac = luacCrossPath(fw);
   if (!fs.existsSync(luac)) {
-    vscode.window.showErrorMessage(
-      "luac.cross was not built (no host C compiler when the firmware was configured). Cannot build the LFS image.",
-    );
-    return;
+    // Built binary not found: try the pre-built binary from global storage,
+    // downloading it on first use if not yet cached.
+    const storageRoot = extensionContext.globalStorageUri.fsPath;
+    const luaVersion = (cfg.nodemcu.lua_version as "51" | "53") || "53";
+    const cached = prebuiltLuacCrossPath(storageRoot, luaVersion);
+    if (!fs.existsSync(cached)) {
+      setStatus("building", "downloading pre-built luac.cross...");
+      const downloaded = await ensurePrebuiltLuacCross({
+        storageRoot,
+        luaVersion,
+        onProgress: (m) => outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] ${m}`),
+      });
+      if (downloaded) {
+        // Re-check the context so LFS commands stay visible on next open.
+        hasHostCompiler = true;
+        void vscode.commands.executeCommand("setContext", "nodemcu.hasHostCompiler", true);
+        luac = downloaded;
+      }
+    } else {
+      luac = cached;
+    }
+    if (!fs.existsSync(luac)) {
+      vscode.window.showErrorMessage(
+        "luac.cross is not available. Either build the firmware with a host C compiler (cc/gcc) " +
+        "or ensure the pre-built binary can be downloaded from GitHub.",
+      );
+      return;
+    }
   }
 
   const files = await collectLfsSources(cfg, fw, workspaceRoot);
@@ -1699,10 +1731,6 @@ async function doEnableLfs(signal?: AbortSignal): Promise<void> {
   const iniPath = existingIniPath();
   if (!cfg || !iniPath) {
     vscode.window.showErrorMessage("No nodemcu.ini found. Run 'NodeMCU: Initialize Project' first.");
-    return;
-  }
-  if (!hasHostCompiler) {
-    vscode.window.showErrorMessage("No host C compiler (cc/gcc) detected; cannot build luac.cross for LFS.");
     return;
   }
   if (!isLfsEnabled(cfg)) {

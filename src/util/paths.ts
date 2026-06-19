@@ -55,6 +55,21 @@ export function luacCrossPath(firmwarePath: string): string {
   return path.join(defaultBuildDir(firmwarePath), "tools", "luac_cross", exe);
 }
 
+/**
+ * Cache directory for a pre-built `luac.cross` binary downloaded on demand.
+ * Keyed by Lua version so lua51 and lua53 don't clobber each other.
+ * `<storageRoot>/luac_cross/<luaVersion>/`
+ */
+export function prebuiltLuacCrossDir(storageRoot: string, luaVersion: string): string {
+  return path.join(storageRoot, "luac_cross", luaVersion);
+}
+
+/** Path to the cached pre-built `luac.cross` binary. */
+export function prebuiltLuacCrossPath(storageRoot: string, luaVersion: string): string {
+  const exe = process.platform === "win32" ? "luac.cross.exe" : "luac.cross";
+  return path.join(prebuiltLuacCrossDir(storageRoot, luaVersion), exe);
+}
+
 /** Output path for the generated LFS image (uploaded to the device + flashreload'd). */
 export function lfsImagePath(firmwarePath: string): string {
   return path.join(defaultBuildDir(firmwarePath), "lfs.img");

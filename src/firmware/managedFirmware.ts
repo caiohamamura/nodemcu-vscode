@@ -6,9 +6,22 @@ import * as child_process from "node:child_process";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import extract from "extract-zip";
+import { prebuiltLuacCrossDir, prebuiltLuacCrossPath as _prebuiltLuacCrossPath } from "../util/paths.js";
 
 export const MANAGED_FIRMWARE_TAG = "v3.1.0";
 export const MANAGED_FIRMWARE_URL = `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/${MANAGED_FIRMWARE_TAG}.zip`;
+
+/**
+ * GitHub release tag that hosts pre-built `luac.cross` binaries for each
+ * platform/arch/lua-version combination. Allows users to use LFS without a
+ * host C compiler — the firmware build's Xtensa toolchain is self-contained
+ * already; the host compiler requirement was only for this one tool.
+ *
+ * Asset name format: `luac.cross-<platform>-<arch>-lua<version>[.exe]`
+ * e.g. `luac.cross-linux-x64-lua53`, `luac.cross.exe-win32-x64-lua53`
+ */
+export const LUAC_CROSS_RELEASE_TAG = "luac-cross-v3.1.0";
+const LUAC_CROSS_BASE_URL = `https://github.com/caiohamamura/nodemcu-firmware/releases/download/${LUAC_CROSS_RELEASE_TAG}`;
 
 const TOOLCHAIN_TARBALL = "xtensa-lx106-elf-win32-1.22.0-88-gde0bdc1-4.8.5.tar.gz";
 const TOOLCHAIN_URL = `https://dl.espressif.com/dl/${TOOLCHAIN_TARBALL}`;
@@ -261,5 +274,62 @@ async function preExtractToolchain(firmwareRoot: string, onProgress?: (msg: stri
   if (fs.existsSync(path.join(toolchainDir, "bin"))) {
     await fsp.unlink(tarballPath).catch(() => {});
     onProgress?.("Toolchain pre-extracted successfully");
+  }
+}
+
+export interface EnsurePrebuiltLuacCrossOptions {
+  /** Extension global storage root (same as the `storageRoot` for firmware). */
+  storageRoot: string;
+  /** Lua version: "51" or "53". Must match the firmware's `-DLUA` flag. */
+  luaVersion: "51" | "53";
+  onProgress?: (message: string) => void;
+}
+
+/**
+ * Ensure a pre-built `luac.cross` binary for the current platform is cached in
+ * `<storageRoot>/luac_cross/<luaVersion>/luac.cross[.exe]`. Returns the path on
+ * success, or `null` if the download failed (callers fall back to building from
+ * source when a host compiler is available).
+ *
+ * Pre-built binaries are hosted as GitHub release assets under
+ * {@link LUAC_CROSS_RELEASE_TAG}. The asset name encodes platform, arch, and
+ * Lua version so the extension picks the right binary automatically.
+ */
+export async function ensurePrebuiltLuacCross(opts: EnsurePrebuiltLuacCrossOptions): Promise<string | null> {
+  const destDir = prebuiltLuacCrossDir(opts.storageRoot, opts.luaVersion);
+  const destPath = _prebuiltLuacCrossPath(opts.storageRoot, opts.luaVersion);
+
+  if (fs.existsSync(destPath)) return destPath;
+
+  const platform = process.platform;
+  const arch = process.arch;
+  const isWin = platform === "win32";
+
+  // Map Node.js platform/arch to the asset naming convention.
+  let platformKey: string;
+  if (platform === "linux") platformKey = arch === "arm64" ? "linux-arm64" : "linux-x64";
+  else if (platform === "darwin") platformKey = arch === "arm64" ? "darwin-arm64" : "darwin-x64";
+  else if (isWin) platformKey = "win32-x64";
+  else return null; // unsupported platform
+
+  const assetName = isWin
+    ? `luac.cross.exe-${platformKey}-lua${opts.luaVersion}`
+    : `luac.cross-${platformKey}-lua${opts.luaVersion}`;
+  const url = `${LUAC_CROSS_BASE_URL}/${assetName}`;
+
+  opts.onProgress?.(`Downloading pre-built luac.cross (${platformKey} lua${opts.luaVersion})`);
+  try {
+    await fsp.mkdir(destDir, { recursive: true });
+    await downloadFile(url, destPath);
+    if (!isWin) {
+      // Mark executable on Unix — GitHub strips the executable bit from release assets.
+      await fsp.chmod(destPath, 0o755);
+    }
+    opts.onProgress?.("Pre-built luac.cross downloaded");
+    return destPath;
+  } catch (err) {
+    opts.onProgress?.(`Pre-built luac.cross download failed: ${err}`);
+    await fsp.rm(destPath, { force: true }).catch(() => {});
+    return null;
   }
 }
