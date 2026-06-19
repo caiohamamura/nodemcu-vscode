@@ -43,13 +43,15 @@ jobs:
           - { flavour: lua53,     binary: luac.cross,     target: linux-x64,    os: ubuntu-24.04 }
           - { flavour: lua51,     binary: luac.cross,     target: linux-x64,    os: ubuntu-24.04 }
           - { flavour: lua51-int, binary: luac.cross.int, target: linux-x64,    os: ubuntu-24.04 }
-          # macOS x64 (Intel) + arm64 (Apple Silicon)
-          - { flavour: lua53,     binary: luac.cross,     target: darwin-x64,   os: macos-13 }
-          - { flavour: lua51,     binary: luac.cross,     target: darwin-x64,   os: macos-13 }
-          - { flavour: lua51-int, binary: luac.cross.int, target: darwin-x64,   os: macos-13 }
-          - { flavour: lua53,     binary: luac.cross,     target: darwin-arm64, os: macos-14 }
-          - { flavour: lua51,     binary: luac.cross,     target: darwin-arm64, os: macos-14 }
-          - { flavour: lua51-int, binary: luac.cross.int, target: darwin-arm64, os: macos-14 }
+          # macOS arm64 (Apple Silicon). macos-13 / macos-14 runners are
+          # retired or deprecating (see actions/runner-images#13518). x64
+          # (Intel) coverage was dropped: no active runner label, and Intel
+          # macOS support ends Aug 2027. `darwin-arm64` is the asset target
+          # name; prebuiltLuacCross.ts does not need to know the runner
+          # image changed.
+          - { flavour: lua53,     binary: luac.cross,     target: darwin-arm64, os: macos-15 }
+          - { flavour: lua51,     binary: luac.cross,     target: darwin-arm64, os: macos-15 }
+          - { flavour: lua51-int, binary: luac.cross.int, target: darwin-arm64, os: macos-15 }
           # Windows x64 + arm64
           - { flavour: lua53,     binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
           - { flavour: lua51,     binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
@@ -72,8 +74,20 @@ jobs:
           mkdir -p "$FW_DIR"
           curl -fsSL "https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/${FW_TAG}.zip" -o fw.zip
           unzip -q fw.zip
-          mv "nodemcu-firmware-${FW_TAG}"/* "$FW_DIR/"
-          rmdir "nodemcu-firmware-${FW_TAG}"
+          # GitHub's zipball for tag `v3.1.0` extracts to
+          # `nodemcu-firmware-3.1.0/` (no `v` prefix on the directory name).
+          # Discover the top-level entry rather than assuming the format so
+          # this stays correct for any future tag.
+          TOP_DIR=$(unzip -Z1 fw.zip | head -1 | cut -d/ -f1)
+          if [ -z "$TOP_DIR" ] || [ ! -d "$TOP_DIR" ]; then
+            echo "Could not find extracted top-level directory in fw.zip"
+            unzip -Z1 fw.zip | head -5
+            exit 1
+          fi
+          # Move the contents (not the wrapper dir) so the resulting layout
+          # matches what the extension's managed-firmware cache produces.
+          mv "$TOP_DIR"/* "$FW_DIR/"
+          rmdir "$TOP_DIR"
           # Apply the two compat patches the extension applies to managed
           # firmware (see src/firmware/managedFirmware.ts:applyCompatibilityPatches).
           # The prebuilts must be byte-identical to what a user builds locally.

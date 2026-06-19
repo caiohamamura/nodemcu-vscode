@@ -5,7 +5,6 @@ import * as os from "node:os";
 import * as child_process from "node:child_process";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
-import { MANAGED_FIRMWARE_TAG } from "./managedFirmware";
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import { luacCrossPath } from "../util/paths";
 
