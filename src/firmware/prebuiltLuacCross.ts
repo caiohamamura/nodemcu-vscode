@@ -90,7 +90,7 @@ export interface PrebuiltReleaseConfig {
 
 export const DEFAULT_PREBUILT_RELEASE: PrebuiltReleaseConfig = {
   repo: { owner: "caiohamamura", repo: "nodemcu-vscode" },
-  releaseTag: MANAGED_FIRMWARE_TAG,
+  releaseTag: "v0.3.0",
 };
 
 /**
