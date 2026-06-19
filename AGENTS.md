@@ -221,7 +221,7 @@ Extension Development Host (see §9).
 | `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
 | `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, applies two compatibility patches (`app/nodemcu-vscode-newlib.c`, `tools/luac_cross/nodemcu-vscode-luac-assert.c`), patches root `CMakeLists.txt` to forward `-DLUA`/`-DLUA_NUMBER_INTEGRAL`/`-DLUA_NUMBER_64BITS` to the firmware ExternalProject (so firmware + luac.cross share the Lua flavour — §5.5), writes `.nodemcu-vscode-managed-firmware.json` marker. |
-| `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target from the `v3.1.0` extension release; built by `.github/workflows/luac-cross-prebuilt.yml`. See §5.5. |
+| `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target. `DEFAULT_PREBUILT_RELEASE` carries two independent tags: `releaseTag` (the GitHub release URL the assets are downloaded from, e.g. `v0.3.1`) and `firmwareTag` (the firmware fork tag embedded in the asset filename + used as the cache key, e.g. `v3.1.0`). Assets are built by `.github/workflows/luac-cross-prebuilt.yml`. See §5.5. |
 | `src/flash/flashManager.ts` | `FlashManager` | Prefers `firmware/tools/toolchains/esptool.py`; falls back to `python -m esptool`. Standard `0x00000` / `0x10000` mapping. |
 | `src/flash/serialDiscovery.ts` | `SerialDiscovery` | Tries `serialport`, then PowerShell `SerialPort::GetPortNames` on Windows, then `/dev/tty*` glob on Linux. Honors `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` env var (JSON array of strings or `{path, manufacturer, ...}`). |
 | `src/luaApi/apiFiles.ts` | `generateLuaApiFile`, `generateLuaRc`, `writeLuaRc` | Hardcoded `KNOWN_GLOBALS` descriptions for ~30 modules; emits `---@meta` + `---@class NodeMCUModule` annotations. |
@@ -337,10 +337,12 @@ pre-built one on demand (first LFS use), then falls back to an error message if
 both sources fail. **For the pre-built binaries to exist, the
 `.github/workflows/luac-cross-prebuilt.yml` workflow must run** — it builds
 `luac.cross` for each flavour × platform/arch (host-tool stage only) and attaches
-the archives to the `v3.1.0` release in `caiohamamura/nodemcu-vscode`. It's
-`workflow_dispatch`-only (firmware tag and extension tag are independent). Until
-those assets exist, users without a host compiler will see a download-failed
-error and must install a host compiler.
+the archives to the current extension release (e.g. `v0.3.1`) in
+`caiohamamura/nodemcu-vscode`. It's `workflow_dispatch`-only (firmware tag and
+extension tag are independent — bump both, the workflow's `tag_name` must match
+`DEFAULT_PREBUILT_RELEASE.releaseTag`). Until those assets exist, users without
+a host compiler will see a download-failed error and must install a host
+compiler.
 
 - **Config**: `[build] lfs_size` (hex like `0x20000` or decimal; `0` = off,
   default off). `DEFAULT_LFS_SIZE = 0x20000` (128 KB) is written by **Enable LFS**.
@@ -469,6 +471,43 @@ error and must install a host compiler.
 - If activation fails with "Cannot find module 'serialport'", check that
   `dist/extension.js` does not have `require("serialport")` rewritten to a
   shimmed path — the esbuild `external` is what keeps it as a real `require`.
+
+### 6.4 Release process
+
+The CI workflow (`.github/workflows/ci.yml`) handles build + publish:
+
+- **Trigger:** `push` of a `v*` tag (or `workflow_dispatch` with a `version`
+  input). A push to `main` runs the `build` job (typecheck + test + bundle) but
+  skips `publish` — that gate is `if: startsWith(github.ref, 'refs/tags/v') ||
+  github.event_name == 'workflow_dispatch'`.
+- **build job:** `npm ci` → `npm run typecheck` → `npm test` → `npm run build`
+  → upload `dist/` as an artifact.
+- **publish job:** `npm ci` → `npm run build` → `npm run package` → create the
+  GitHub release (`softprops/action-gh-release@v2` with `generate_release_notes:
+  true`) → publish the VSIX to Open VSX with
+  `npx ovsx publish --pat ${{ secrets.OVSX_PAT }}`.
+
+To cut a new release:
+
+1. Bump `version` in `package.json` (this is what the VSIX carries to the
+   marketplace and what `vsce` enforces as a strictly-increasing sequence).
+2. Update `CHANGELOG.md` — `generate_release_notes: true` produces a
+   commit-by-commit summary at the bottom, but the hand-curated section is
+   what users see in the marketplace / README.
+3. If the new release should also host prebuilt `luac.cross` assets (almost
+   always yes — see §5.5): bump
+   `src/firmware/prebuiltLuacCross.ts:DEFAULT_PREBUILT_RELEASE.releaseTag`
+   *and* `tag_name` in
+   `.github/workflows/luac-cross-prebuilt.yml` to the new release tag, and
+   re-run that workflow (`gh workflow run luac-cross-prebuilt.yml
+   -f firmwareTag=v3.1.0`).
+4. Commit + push the version bump, then `git tag v<version> && git push origin
+   v<version>`. The `publish` job will create the release + VSIX + Open VSX
+   upload.
+
+**Gotcha:** `vsce` refuses to republish a version that already exists. To
+re-release the same VSIX you must bump the version (e.g. v0.3.0 → v0.3.1).
+Don't try to "overwrite" an existing release by re-tagging.
 
 ---
 
@@ -705,10 +744,11 @@ normal command/sync flows because that steals focus from the Serial Console.
 
 ### 9.4 Known issues
 
-(2026-06-11: previous entries here are fixed — the Lua/C Modules views populate
-and round-trip checkbox state against a real EDH, and the
-`nodemcu-vscode.firmwarePath` default is now `""`. Verified by the hardware
-e2e suite, scenario 2.)
+(2026-06-19: previous entries here are fixed. The CI pipeline
+(`npm test` → `npm run build` → `npm run package` → GitHub
+Release + Open VSX publish) is now green and was used to ship
+v0.3.1 with all 12 prebuilt `luac.cross` assets attached. See
+§6.4 for the release process.)
 
 - The hardware e2e suite (`tests/e2e/device_cdp_e2e.test.ts`) reads device
   serial output directly. The extension's shared serial session owns the port,
