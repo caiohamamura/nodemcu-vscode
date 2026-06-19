@@ -136,6 +136,23 @@ jobs:
             (void)L; (void)msg;
           }
           ASSERT_EOF
+          # Patch app/lua/luac_cross/luac.c: the LFS declaration
+          # `extern uint dumpToFlashImage(...)` only defines the `uint`
+          # typedef for MSVC/MinGW. Apple Clang and GCC (Linux + macOS)
+          # need it too, otherwise the lua51/lua51-int build fails with
+          # `error: unknown type name 'uint'`. lua53 uses a different
+          # luac.c and does not need this. Expand the guard.
+          python3 -c "
+          import pathlib
+          p = pathlib.Path('$FW_DIR/app/lua/luac_cross/luac.c')
+          t = p.read_text()
+          old = '#if defined(_MSC_VER) || defined(__MINGW32__)\ntypedef unsigned int uint;\n#endif'
+          new = '#if defined(_MSC_VER) || defined(__MINGW32__) || defined(__GNUC__) || defined(__clang__)\ntypedef unsigned int uint;\n#endif'
+          if old not in t:
+            raise SystemExit('Expected uint typedef block not found in luac.c')
+          t = t.replace(old, new, 1)
+          p.write_text(t)
+          "
           echo "Firmware prepared at $(pwd)/$FW_DIR"
 
       - name: Compute cmake flags
@@ -151,6 +168,7 @@ jobs:
 
       - name: Configure
         working-directory: ${{ github.workspace }}/firmware/inner
+        shell: bash
         run: |
           set -e
           GENERATOR="Unix Makefiles"
@@ -162,6 +180,7 @@ jobs:
 
       - name: Build
         working-directory: ${{ github.workspace }}/firmware/inner
+        shell: bash
         run: cmake --build build --target ${{ matrix.binary == 'luac.cross.int' && 'luac.cross.int' || 'luac.cross' }} -j
 
       - name: Verify the binary reports the right Lua version
