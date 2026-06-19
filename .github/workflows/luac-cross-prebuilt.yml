@@ -86,7 +86,11 @@ jobs:
           fi
           # Move the contents (not the wrapper dir) so the resulting layout
           # matches what the extension's managed-firmware cache produces.
+          # Enable dotglob so .gitmodules / .github/ / .gdbinit aren't left
+          # behind (they would block the `rmdir` below).
+          shopt -s dotglob
           mv "$TOP_DIR"/* "$FW_DIR/"
+          shopt -u dotglob
           rmdir "$TOP_DIR"
           # Apply the two compat patches the extension applies to managed
           # firmware (see src/firmware/managedFirmware.ts:applyCompatibilityPatches).
