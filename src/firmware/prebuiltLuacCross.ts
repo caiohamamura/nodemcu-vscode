@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as child_process from "node:child_process";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
+import { MANAGED_FIRMWARE_TAG } from "./managedFirmware";
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import { luacCrossPath } from "../util/paths";
 
@@ -83,13 +84,31 @@ export function currentPrebuiltTarget(): PrebuiltTarget {
 export interface PrebuiltReleaseConfig {
   /** GitHub owner/repo hosting the release assets. */
   repo: { owner: string; repo: string };
-  /** Tag of the release that carries the prebuilt assets. Defaults to the firmware tag. */
+  /**
+   * Tag of the GitHub release that carries the prebuilt assets. This is
+   * the URL path the assets are downloaded from and is independent of the
+   * firmware tag (an extension release like v0.3.0 may host assets built
+   * against firmware v3.1.0).
+   */
   releaseTag: string;
+  /**
+   * Firmware tag the prebuilt binaries were built against. Encoded into
+   * the asset filename (`luac-cross-<firmwareTag>-...`) and used as the
+   * cache key, so the cached binary can never drift from the firmware
+   * bytecode it must compile.
+   */
+  firmwareTag: string;
 }
 
 export const DEFAULT_PREBUILT_RELEASE: PrebuiltReleaseConfig = {
   repo: { owner: "caiohamamura", repo: "nodemcu-vscode" },
+  // The prebuilt workflow uploads assets to the extension's GitHub
+  // release (see .github/workflows/luac-cross-prebuilt.yml:tag_name),
+  // but the assets themselves are built against the firmware fork
+  // (caiohamamura/nodemcu-firmware) — those two tags drift
+  // independently by design.
   releaseTag: "v0.3.0",
+  firmwareTag: MANAGED_FIRMWARE_TAG,
 };
 
 /**
@@ -170,7 +189,12 @@ export async function resolvePrebuiltLuacCross(
   const { binaryName } = luacFlavourInfo(flavour);
   const release = opts.release ?? DEFAULT_PREBUILT_RELEASE;
   const downloadBase = opts.downloadBase ?? "https://github.com";
-  const firmwareTag = release.releaseTag;
+  // The firmware tag is what the prebuilt binary was built against and is
+  // what goes into the asset filename + cache key. The release tag is the
+  // URL path the assets are downloaded from. They differ on purpose: the
+  // extension ships its own release tag (e.g. v0.3.0) that hosts assets
+  // built for a different firmware fork tag (e.g. v3.1.0).
+  const firmwareTag = release.firmwareTag;
   const cachedPath = prebuiltCachePath(opts.storageRoot, firmwareTag, target, flavour, binaryName);
 
   if (await exists(cachedPath)) {
@@ -184,7 +208,7 @@ export async function resolvePrebuiltLuacCross(
   const assetName = prebuiltAssetName(target, flavour, firmwareTag);
   opts.onProgress?.(`Looking up prebuilt luac.cross (${assetName})`);
 
-  const downloadUrl = `${downloadBase}/${release.repo.owner}/${release.repo.repo}/releases/download/${encodeURIComponent(firmwareTag)}/${assetName}`;
+  const downloadUrl = `${downloadBase}/${release.repo.owner}/${release.repo.repo}/releases/download/${encodeURIComponent(release.releaseTag)}/${assetName}`;
   const archiveDir = path.join(path.dirname(cachedPath), "..", ".download");
   await ensureDir(archiveDir);
   const archivePath = path.join(archiveDir, assetName);
