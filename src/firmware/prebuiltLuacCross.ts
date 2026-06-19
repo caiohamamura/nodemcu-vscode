@@ -87,7 +87,7 @@ export interface PrebuiltReleaseConfig {
   /**
    * Tag of the GitHub release that carries the prebuilt assets. This is
    * the URL path the assets are downloaded from and is independent of the
-   * firmware tag (an extension release like v0.3.0 may host assets built
+   * firmware tag (an extension release like v0.3.1 may host assets built
    * against firmware v3.1.0).
    */
   releaseTag: string;
@@ -107,7 +107,7 @@ export const DEFAULT_PREBUILT_RELEASE: PrebuiltReleaseConfig = {
   // but the assets themselves are built against the firmware fork
   // (caiohamamura/nodemcu-firmware) — those two tags drift
   // independently by design.
-  releaseTag: "v0.3.0",
+  releaseTag: "v0.3.1",
   firmwareTag: MANAGED_FIRMWARE_TAG,
 };
 
@@ -192,7 +192,7 @@ export async function resolvePrebuiltLuacCross(
   // The firmware tag is what the prebuilt binary was built against and is
   // what goes into the asset filename + cache key. The release tag is the
   // URL path the assets are downloaded from. They differ on purpose: the
-  // extension ships its own release tag (e.g. v0.3.0) that hosts assets
+  // extension ships its own release tag (e.g. v0.3.1) that hosts assets
   // built for a different firmware fork tag (e.g. v3.1.0).
   const firmwareTag = release.firmwareTag;
   const cachedPath = prebuiltCachePath(opts.storageRoot, firmwareTag, target, flavour, binaryName);

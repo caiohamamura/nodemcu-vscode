@@ -240,8 +240,8 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.3.0
+          tag_name: v0.3.1
           files: ${{ github.workspace }}/firmware/inner/${{ steps.package.outputs.asset }}
-          # Release v0.3.0 must exist in the extension repo; the prebuilt
+          # Release v0.3.1 must exist in the extension repo; the prebuilt
           # binaries are indexed by this release tag (not the firmware tag).
           fail_on_unmatched_files: true

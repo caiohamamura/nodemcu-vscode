@@ -2,6 +2,44 @@
 
 All notable changes to the NodeMCU VSCode extension are documented here.
 
+## [0.3.1] - 2026-06-19
+
+### Fixed
+- **Prebuilt `luac.cross` download** — the resolver was looking for assets at
+  `releases/download/<releaseTag>/luac-cross-<releaseTag>-...`, but the assets
+  on the v0.3.0 release were named `luac-cross-<firmwareTag>-...` with the
+  firmware fork tag (e.g. v3.1.0). The release tag (v0.3.0) and firmware tag
+  (v3.1.0) are now properly separated; the resolver downloads from the
+  extension's release URL and uses the firmware tag in the asset filename and
+  cache key, so the cached binary can never drift from the firmware it builds.
+- **CI pipeline** — `npm test` was failing on every push because of the
+  resolver bug above, which blocked the VSIX build + publish step. The fix
+  restores `npm test` to green.
+
+### Fixed (prebuilt workflow `.github/workflows/luac-cross-prebuilt.yml`)
+- Zip directory discovery — the zipball's top-level dir strips the `v`
+  prefix, so the workflow now discovers it from the zip listing instead of
+  hardcoding `nodemcu-firmware-${FW_TAG}`.
+- Dotfiles in the zip wrapper were left behind by `mv "$TOP_DIR"/*` and
+  blocked the subsequent `rmdir`; enable `shopt -s dotglob` around the move.
+- Windows Configure/Build steps had no `shell: bash`, so PowerShell choked
+  on the bash `if [ ... ]` test.
+- The `uint` typedef in `app/lua/luac_cross/luac.c` was guarded by
+  `defined(_MSC_VER) || defined(__MINGW32__)` only, breaking GCC/Clang
+  builds of the lua51 flavours. Expanded to also cover `__GNUC__` and
+  `__clang__`.
+- PowerShell `Compress-Archive` was given a POSIX-style `/tmp/...` path
+  from Git Bash `mktemp`; converted via `cygpath -w` and passed through
+  env vars.
+- Windows lua51-int matrix entry used `binary: luac.cross.exe`; the cmake
+  target for `LUA_NUMBER_INTEGRAL=ON` is `luac.cross.int`, so the produced
+  binary is `luac.cross.int.exe`. Corrected.
+- Build step used `matrix.binary` to pick the cmake target; switched to
+  `matrix.flavour` since `binary` is the filename and the cmake target
+  name differs from it on Windows.
+- Dropped the `macos-13` (retired) and `macos-14` (deprecating) runners;
+  `darwin-arm64` builds now run on `macos-15`.
+
 ## [0.3.0] - 2026-06-19
 
 ### Added
