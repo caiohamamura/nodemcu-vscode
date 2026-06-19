@@ -53,12 +53,12 @@ jobs:
           - { flavour: lua51,     binary: luac.cross,     target: darwin-arm64, os: macos-15 }
           - { flavour: lua51-int, binary: luac.cross.int, target: darwin-arm64, os: macos-15 }
           # Windows x64 + arm64
-          - { flavour: lua53,     binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
-          - { flavour: lua51,     binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
-          - { flavour: lua51-int, binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
-          - { flavour: lua53,     binary: luac.cross.exe, target: win32-arm64,  os: windows-2022 }
-          - { flavour: lua51,     binary: luac.cross.exe, target: win32-arm64,  os: windows-2022 }
-          - { flavour: lua51-int, binary: luac.cross.exe, target: win32-arm64,  os: windows-2022 }
+          - { flavour: lua53,     binary: luac.cross.exe,     target: win32-x64,    os: windows-2022 }
+          - { flavour: lua51,     binary: luac.cross.exe,     target: win32-x64,    os: windows-2022 }
+          - { flavour: lua51-int, binary: luac.cross.int.exe, target: win32-x64,    os: windows-2022 }
+          - { flavour: lua53,     binary: luac.cross.exe,     target: win32-arm64,  os: windows-2022 }
+          - { flavour: lua51,     binary: luac.cross.exe,     target: win32-arm64,  os: windows-2022 }
+          - { flavour: lua51-int, binary: luac.cross.int.exe, target: win32-arm64,  os: windows-2022 }
 
     runs-on: ${{ matrix.os }}
     env:
