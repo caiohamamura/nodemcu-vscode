@@ -31,6 +31,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as child_process from "node:child_process";
 import { SerialPort } from "serialport";
 import { parseIni, defaultConfig, type NodemcuConfig } from "../../src/config/nodemcuIni";
 import { BuildManager, type BuildContext } from "../../src/build/buildManager";
@@ -44,7 +45,16 @@ import { luacCrossPath, lfsImagePath } from "../../src/util/paths";
 
 const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || (process.platform === "win32" ? "COM7" : "/dev/ttyUSB0");
 const BAUD = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
-const PYTHON = process.env.NODEMCU_VSCODE_E2E_PYTHON || "python";
+
+function resolvePython(): string {
+  if (process.env.NODEMCU_VSCODE_E2E_PYTHON) return process.env.NODEMCU_VSCODE_E2E_PYTHON;
+  for (const candidate of ["python", "python3", "py"]) {
+    const r = child_process.spawnSync(process.platform === "win32" ? "where" : "which", [candidate], { encoding: "utf-8" });
+    if (r.status === 0 && (r.stdout || "").trim()) return candidate;
+  }
+  return "python";
+}
+const PYTHON = resolvePython();
 const LFS_SIZE = Number(process.env.NODEMCU_VSCODE_LFS_SIZE || "0x20000");
 const STORAGE_ROOT = process.env.NODEMCU_VSCODE_STORAGE_ROOT || path.join(os.homedir(), ".nodemcu-vscode");
 // A unique module name so we can prove it loaded from flash (not a stale SPIFFS file).
@@ -54,6 +64,29 @@ const enabled = process.env.NODEMCU_VSCODE_E2E_HARDWARE === "1";
 const describe_ = enabled ? describe : describe.skip;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Open the serial port and read until the Lua REPL prompt (`> `) appears or
+ * `timeoutMs` elapses. Returns the full boot text (latin1). Used after a fresh
+ * flash to wait for SPIFFS format to complete before interacting with the REPL.
+ * The first-boot SPIFFS format on a 4 MB flash can take 20–40 s.
+ */
+async function waitForBoot(timeoutMs = 60_000): Promise<string> {
+  let out = "";
+  let ready = false;
+  const sp = await new Promise<SerialPort>((resolve, reject) => {
+    const p = new SerialPort({ path: PORT, baudRate: BAUD }, (err) => (err ? reject(err) : resolve(p)));
+  });
+  sp.on("data", (c: Buffer) => {
+    out += c.toString("latin1");
+    if (out.includes("> ")) ready = true;
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (!ready && Date.now() < deadline) await sleep(500);
+  await new Promise<void>((r) => (sp.isOpen ? sp.close(() => r()) : r()));
+  await sleep(250);
+  return out;
+}
 
 /**
  * Open the REPL, send the given Lua lines (one chunk per line — device locals do
@@ -141,18 +174,32 @@ describe_("LFS (Lua Flash Store) hardware e2e", () => {
       onStderr: (s) => process.stderr.write(s),
     });
     expect(flash.success, `flash exit=${flash.exitCode}`).toBe(true);
-    await sleep(10_000); // first boot formats SPIFFS
 
-    // string.format, not concatenation: tostring(<number>) is unreliable on
-    // some NodeMCU builds (returns "g") — see AGENTS §10.
-    const out = await repl(
-      [`local pt=node.getpartitiontable() print(string.format("LFS_PART=%d", pt and pt.lfs_size or -1))`],
-      5000,
-    );
-    const m = /LFS_PART=(\d+)/.exec(out);
-    process.stdout.write(`[lfs] partition probe: ${m ? m[1] : "(none)"} (expected ${LFS_SIZE})\n`);
-    expect(m, `no LFS_PART line; output tail: ${out.slice(-300)}`).toBeTruthy();
-    expect(Number(m![1])).toBe(LFS_SIZE);
+    // Wait for first boot to complete (SPIFFS format on a fresh 4 MB flash can
+    // take 20–40 s). Read the boot banner — it carries "LFS: 0x<size> bytes
+    // total capacity" which is the most reliable way to confirm the partition.
+    process.stdout.write("[lfs] waiting for device boot (SPIFFS format + Lua ready)...\n");
+    const bootOut = await waitForBoot(90_000);
+    process.stdout.write(`[lfs] boot tail: ${bootOut.slice(-400).replace(/[^\x20-\x7e\n]/g, ".")}\n`);
+
+    // Fast path: parse LFS partition size from the boot banner.
+    const bootLfs = /LFS:\s*(0x[0-9a-fA-F]+)\s+bytes\s+total/i.exec(bootOut);
+    if (bootLfs) {
+      const bootSize = parseInt(bootLfs[1], 16);
+      process.stdout.write(`[lfs] LFS from boot banner: 0x${bootSize.toString(16)} (expected 0x${LFS_SIZE.toString(16)})\n`);
+      expect(bootSize).toBe(LFS_SIZE);
+    } else {
+      // Fall back: query via REPL. string.format, not concatenation —
+      // tostring(<number>) is unreliable on some builds (see AGENTS §10).
+      const out = await repl(
+        [`local pt=node.getpartitiontable() print(string.format("LFS_PART=%d", pt and pt.lfs_size or -1))`],
+        5000,
+      );
+      const m = /LFS_PART=(\d+)/.exec(out);
+      process.stdout.write(`[lfs] partition probe: ${m ? m[1] : "(none)"} (expected ${LFS_SIZE})\n`);
+      expect(m, `no LFS_PART line; boot tail: ${bootOut.slice(-300).replace(/[^\x20-\x7e\n]/g, ".")}; repl tail: ${out.slice(-300)}`).toBeTruthy();
+      expect(Number(m![1])).toBe(LFS_SIZE);
+    }
   }, 1_800_000);
 
   it("compiles a module into an LFS image, flash-reloads it, and runs it from flash", async () => {
