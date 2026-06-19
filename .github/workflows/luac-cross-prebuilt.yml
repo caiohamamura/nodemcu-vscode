@@ -1,0 +1,201 @@
+name: Build prebuilt luac.cross
+
+# Cross-builds the LFS image compiler for the 3 valid Lua flavours and the
+# 3 host platforms + 2 architectures, and attaches the archives to the GitHub
+# release that matches the firmware fork tag (e.g. `v3.1.0`).
+#
+# Triggered:
+#   - manually via `workflow_dispatch` (input: firmwareTag)
+#
+# Manual-only because the firmware fork tag (e.g. `v3.1.0`) and the extension
+# release tag (e.g. `v0.2.6`) are independent — pushing a `v*` extension tag
+# would otherwise try to download a non-existent firmware zip. Run this
+# workflow whenever the firmware fork gets a new tag (or a new LFS-affecting
+# patch) and the resulting prebuilts are picked up by the extension's
+# `DEFAULT_PREBUILT_RELEASE.releaseTag` (see src/firmware/prebuiltLuacCross.ts).
+#
+# The NodeMCU firmware itself is downloaded from caiohamamura/nodemcu-firmware
+# at the given tag and built only up to the host tool stage — the xtensa
+# firmware compile is skipped (we don't need the firmware binary, just
+# `luac.cross` / `luac.cross.int`).
+
+on:
+  workflow_dispatch:
+    inputs:
+      firmwareTag:
+        description: "Firmware fork tag to build against (e.g. v3.1.0)"
+        required: true
+        default: "v3.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  prebuilts:
+    name: "${{ matrix.flavour }} on ${{ matrix.target }}"
+    strategy:
+      # Don't auto-cancel in-flight jobs: each archive is small, and a partial
+      # matrix (some archives built, others not) is worse than waiting.
+      fail-fast: false
+      matrix:
+        include:
+          # linux x64 (native on the GH runner)
+          - { flavour: lua53,     binary: luac.cross,     target: linux-x64,    os: ubuntu-24.04 }
+          - { flavour: lua51,     binary: luac.cross,     target: linux-x64,    os: ubuntu-24.04 }
+          - { flavour: lua51-int, binary: luac.cross.int, target: linux-x64,    os: ubuntu-24.04 }
+          # macOS x64 (Intel) + arm64 (Apple Silicon)
+          - { flavour: lua53,     binary: luac.cross,     target: darwin-x64,   os: macos-13 }
+          - { flavour: lua51,     binary: luac.cross,     target: darwin-x64,   os: macos-13 }
+          - { flavour: lua51-int, binary: luac.cross.int, target: darwin-x64,   os: macos-13 }
+          - { flavour: lua53,     binary: luac.cross,     target: darwin-arm64, os: macos-14 }
+          - { flavour: lua51,     binary: luac.cross,     target: darwin-arm64, os: macos-14 }
+          - { flavour: lua51-int, binary: luac.cross.int, target: darwin-arm64, os: macos-14 }
+          # Windows x64 + arm64
+          - { flavour: lua53,     binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
+          - { flavour: lua51,     binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
+          - { flavour: lua51-int, binary: luac.cross.exe, target: win32-x64,    os: windows-2022 }
+          - { flavour: lua53,     binary: luac.cross.exe, target: win32-arm64,  os: windows-2022 }
+          - { flavour: lua51,     binary: luac.cross.exe, target: win32-arm64,  os: windows-2022 }
+          - { flavour: lua51-int, binary: luac.cross.exe, target: win32-arm64,  os: windows-2022 }
+
+    runs-on: ${{ matrix.os }}
+    env:
+      FW_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.firmwareTag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download firmware
+        shell: bash
+        run: |
+          set -e
+          FW_DIR="firmware/inner"
+          mkdir -p "$FW_DIR"
+          curl -fsSL "https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/${FW_TAG}.zip" -o fw.zip
+          unzip -q fw.zip
+          mv "nodemcu-firmware-${FW_TAG}"/* "$FW_DIR/"
+          rmdir "nodemcu-firmware-${FW_TAG}"
+          # Apply the two compat patches the extension applies to managed
+          # firmware (see src/firmware/managedFirmware.ts:applyCompatibilityPatches).
+          # The prebuilts must be byte-identical to what a user builds locally.
+          cat > "$FW_DIR/app/nodemcu-vscode-newlib.c" <<'NEWLIB_EOF'
+          #include <stddef.h>
+
+          struct _reent;
+
+          extern void *malloc(size_t size);
+          extern void free(void *ptr);
+          extern void *realloc(void *ptr, size_t size);
+
+          void *_malloc_r(struct _reent *reent, size_t size)
+          {
+            (void)reent;
+            return malloc(size);
+          }
+
+          void _free_r(struct _reent *reent, void *ptr)
+          {
+            (void)reent;
+            free(ptr);
+          }
+
+          void *_realloc_r(struct _reent *reent, void *ptr, size_t size)
+          {
+            (void)reent;
+            return realloc(ptr, size);
+          }
+          NEWLIB_EOF
+          python3 -c "
+          import pathlib
+          p = pathlib.Path('$FW_DIR/app/CMakeLists.txt')
+          t = p.read_text()
+          t = t.replace('add_executable(\${EXECUTABLE_NAME} dummy.c)', 'add_executable(\${EXECUTABLE_NAME} dummy.c nodemcu-vscode-newlib.c)', 1)
+          p.write_text(t)
+          "
+          cat > "$FW_DIR/tools/luac_cross/nodemcu-vscode-luac-assert.c" <<'ASSERT_EOF'
+          #include <lua.h>
+          #include <lauxlib.h>
+          void luaL_assertfail(lua_State *L, const char *msg) {
+            (void)L; (void)msg;
+          }
+          ASSERT_EOF
+          echo "Firmware prepared at $(pwd)/$FW_DIR"
+
+      - name: Compute cmake flags
+        id: flags
+        shell: bash
+        run: |
+          case "${{ matrix.flavour }}" in
+            lua53)     echo "lua=53" >> "$GITHUB_OUTPUT"; echo "integral=" >> "$GITHUB_OUTPUT" ;;
+            lua51)     echo "lua=51" >> "$GITHUB_OUTPUT"; echo "integral=" >> "$GITHUB_OUTPUT" ;;
+            lua51-int) echo "lua=51" >> "$GITHUB_OUTPUT"; echo "integral=-DLUA_NUMBER_INTEGRAL=ON" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "target=${{ matrix.binary }}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure
+        working-directory: ${{ github.workspace }}/firmware/inner
+        run: |
+          set -e
+          GENERATOR="Unix Makefiles"
+          if [ "${{ runner.os }}" = "Windows" ]; then GENERATOR="Ninja"; fi
+          cmake -S . -B build -G "$GENERATOR" \
+            -DLUA=${{ steps.flags.outputs.lua }} \
+            ${{ steps.flags.outputs.integral }} \
+            -DBUILD_HOST_TOOLS=ON
+
+      - name: Build
+        working-directory: ${{ github.workspace }}/firmware/inner
+        run: cmake --build build --target ${{ matrix.binary == 'luac.cross.int' && 'luac.cross.int' || 'luac.cross' }} -j
+
+      - name: Verify the binary reports the right Lua version
+        working-directory: ${{ github.workspace }}/firmware/inner
+        shell: bash
+        run: |
+          set -e
+          BIN="build/tools/luac_cross/${{ steps.flags.outputs.target }}"
+          if [ ! -f "$BIN" ]; then
+            echo "Binary not found at $BIN"
+            ls -la build/tools/luac_cross/ || true
+            exit 1
+          fi
+          case "${{ matrix.flavour }}" in
+            lua53)     EXPECT='Lua 5.3' ;;
+            lua51)     EXPECT='Lua 5.1' ;;
+            lua51-int) EXPECT='Lua 5.1' ;;
+          esac
+          OUT=$("$BIN" -v 2>&1 || true)
+          echo "Got: $OUT"
+          echo "Want: $EXPECT"
+          echo "$OUT" | grep -q "$EXPECT" || { echo "MISMATCH"; exit 1; }
+
+      - name: Package
+        id: package
+        working-directory: ${{ github.workspace }}/firmware/inner
+        shell: bash
+        run: |
+          set -e
+          ASSET="luac-cross-${FW_TAG}-${{ matrix.flavour }}-${{ matrix.target }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EXT="zip"
+          else
+            EXT="tar.gz"
+          fi
+          ASSET="${ASSET}.${EXT}"
+          STAGE="$(mktemp -d)"
+          cp "build/tools/luac_cross/${{ steps.flags.outputs.target }}" "$STAGE/"
+          BIN_BASE=$(basename "${{ steps.flags.outputs.target }}")
+          if [ "$EXT" = "tar.gz" ]; then
+            tar -C "$STAGE" -czf "$ASSET" "$BIN_BASE"
+          else
+            powershell -NoProfile -Command "Compress-Archive -Path '$STAGE/$BIN_BASE' -DestinationPath '$ASSET'"
+          fi
+          ls -la "$ASSET"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.FW_TAG }}
+          files: ${{ github.workspace }}/firmware/inner/${{ steps.package.outputs.asset }}
+          # Don't create a new release if one doesn't exist for the tag —
+          # firmware-tagged releases are managed separately.
+          fail_on_unmatched_files: true

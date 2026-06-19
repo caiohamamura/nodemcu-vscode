@@ -220,7 +220,8 @@ Extension Development Host (see §9).
 | `src/build/outputParser.ts` | `parseProblems`, `summarize`, `extractModuleBuildSummary` | Pure regex; no vscode dependency. |
 | `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
-| `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, applies two compatibility patches (`app/nodemcu-vscode-newlib.c`, `tools/luac_cross/nodemcu-vscode-luac-assert.c`), writes `.nodemcu-vscode-managed-firmware.json` marker. |
+| `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, applies two compatibility patches (`app/nodemcu-vscode-newlib.c`, `tools/luac_cross/nodemcu-vscode-luac-assert.c`), patches root `CMakeLists.txt` to forward `-DLUA`/`-DLUA_NUMBER_INTEGRAL`/`-DLUA_NUMBER_64BITS` to the firmware ExternalProject (so firmware + luac.cross share the Lua flavour — §5.5), writes `.nodemcu-vscode-managed-firmware.json` marker. |
+| `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target from the `v3.1.0` extension release; built by `.github/workflows/luac-cross-prebuilt.yml`. See §5.5. |
 | `src/flash/flashManager.ts` | `FlashManager` | Prefers `firmware/tools/toolchains/esptool.py`; falls back to `python -m esptool`. Standard `0x00000` / `0x10000` mapping. |
 | `src/flash/serialDiscovery.ts` | `SerialDiscovery` | Tries `serialport`, then PowerShell `SerialPort::GetPortNames` on Windows, then `/dev/tty*` glob on Linux. Honors `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` env var (JSON array of strings or `{path, manufacturer, ...}`). |
 | `src/luaApi/apiFiles.ts` | `generateLuaApiFile`, `generateLuaRc`, `writeLuaRc` | Hardcoded `KNOWN_GLOBALS` descriptions for ~30 modules; emits `---@meta` + `---@class NodeMCUModule` annotations. |
@@ -316,21 +317,30 @@ one of two ways:
    `-DBUILD_HOST_TOOLS=ON`. The host tools are pre-built with a **host-clean PATH**
    before the firmware build — otherwise the host gcc grabs the xtensa `as` off
    PATH and dies with `as: unrecognized option '--64'`.
-2. **Pre-built binary** (new path): `ensurePrebuiltLuacCross` in
-   `src/firmware/managedFirmware.ts` downloads the correct binary for the current
-   platform from a GitHub release (`LUAC_CROSS_RELEASE_TAG = "luac-cross-v3.1.0"`).
-   Asset names: `luac.cross[-linux-x64-lua53]` etc. Cached at
-   `<globalStorageUri>/luac_cross/<luaVersion>/luac.cross[.exe]`.
-   `prebuiltLuacCrossPath(storageRoot, luaVersion)` in `util/paths.ts` is the
-   accessor. `updateHostCompilerContext()` checks both paths and sets
-   `nodemcu.hasHostCompiler` true if either is available.
+2. **Pre-built binary** (new path): `src/firmware/prebuiltLuacCross.ts` resolves
+   and downloads the correct binary for the current Lua **flavour** + host target
+   from a GitHub release. The flavour (`luacFlavour(cfg)`) is one of `lua51`,
+   `lua51-int` (`-DLUA_NUMBER_INTEGRAL`), or `lua53` — so a downloaded `luac.cross`
+   always matches the firmware's bytecode (`lua51-int` ships as `luac.cross.int`).
+   Asset name: `luac-cross-<firmwareTag>-<flavour>-<platform>-<arch>.{tar.gz|zip}`,
+   keyed to `MANAGED_FIRMWARE_TAG` (`v3.1.0`) so the tool and firmware can't drift.
+   `resolvePrebuiltLuacCross` downloads, extracts (system `tar`, falls back to
+   `extract-zip`), and runs `luac.cross -v` to **verify the flavour** before use;
+   `installPrebuiltLuacCross` copies it to `luacCrossPath(fw)` so the rest of the
+   pipeline is unchanged. Cached at
+   `<globalStorageUri>/luac-cross/<tag>/<flavour>/<platform>-<arch>/`.
+   `updateHostCompilerContext()` sets `nodemcu.hasHostCompiler` true when a host
+   compiler is on PATH **or** a prebuilt resolves for the current config.
 
-`deployLfsImage()` prefers the firmware-build binary; if absent, downloads the
+`deployLfsImage()` prefers the firmware-build binary; if absent, resolves the
 pre-built one on demand (first LFS use), then falls back to an error message if
-both sources fail. **For the pre-built binaries to be available, CI must build
-`luac.cross` for each platform × Lua version and upload as release assets to the
-`luac-cross-v3.1.0` tag in `caiohamamura/nodemcu-firmware`.** Until those assets
-exist, users without a host compiler will see a download-failed error.
+both sources fail. **For the pre-built binaries to exist, the
+`.github/workflows/luac-cross-prebuilt.yml` workflow must run** — it builds
+`luac.cross` for each flavour × platform/arch (host-tool stage only) and attaches
+the archives to the `v3.1.0` release in `caiohamamura/nodemcu-vscode`. It's
+`workflow_dispatch`-only (firmware tag and extension tag are independent). Until
+those assets exist, users without a host compiler will see a download-failed
+error and must install a host compiler.
 
 - **Config**: `[build] lfs_size` (hex like `0x20000` or decimal; `0` = off,
   default off). `DEFAULT_LFS_SIZE = 0x20000` (128 KB) is written by **Enable LFS**.
@@ -495,6 +505,17 @@ exist, users without a host compiler will see a download-failed error.
     firmware-fork `-DLUA` forwarding fix in §5.5. Verified on a real ESP8266 for
     both lua53 and lua51: device boots the matching Lua version and the module
     runs from flash (`pong-from-lfs`). Run with linuxbrew on PATH for cmake.
+  - `lfs_heap_e2e.test.ts` — CDP-free; quantifies LFS RAM savings on real
+    hardware. Compiles **one** module two ways (plain `.lc` for SPIFFS via
+    `luac.cross -o`; flash image via `buildLfsImage`), loads each on a clean heap,
+    and compares `node.heap()`. Asserts the module's RAM cost from flash is much
+    smaller than from SPIFFS and that more heap is free with it active. Needs
+    `NODEMCU_VSCODE_E2E_HARDWARE=1` + LFS-capable firmware already flashed, plus
+    a `luac.cross` (via `NODEMCU_VSCODE_LFS_FIRMWARE_PATH` or
+    `NODEMCU_VSCODE_LUAC_CROSS`). Measured on a real ESP8266: a 7671 B-bytecode
+    module costs **28184 B** of heap from SPIFFS vs **4952 B** from LFS (~23 KB
+    saved, ≈2.4× more free heap); a 240-function module OOMs the SPIFFS loader
+    entirely while LFS loads it fine.
 
 ### 7.2 vitest config
 
