@@ -181,7 +181,7 @@ jobs:
       - name: Build
         working-directory: ${{ github.workspace }}/firmware/inner
         shell: bash
-        run: cmake --build build --target ${{ matrix.binary == 'luac.cross.int' && 'luac.cross.int' || 'luac.cross' }} -j
+        run: cmake --build build --target ${{ matrix.flavour == 'lua51-int' && 'luac.cross.int' || 'luac.cross' }} -j
 
       - name: Verify the binary reports the right Lua version
         working-directory: ${{ github.workspace }}/firmware/inner
