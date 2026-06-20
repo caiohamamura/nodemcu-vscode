@@ -2,6 +2,19 @@
 
 All notable changes to the NodeMCU VSCode extension are documented here.
 
+## [0.3.2] - 2026-06-19
+
+### Fixed
+- **Boot UART baud now honours `[nodemcu] baud`** — `BuildManager` syncs the
+  firmware's `BIT_RATE_DEFAULT` constant in `app/include/user_config.h` with the
+  configured baud on every build. Previously the device always booted at the
+  firmware default (115200) and ignored the configured rate, which made the
+  default build/upload baud setting effectively a no-op. Arbitrary baud values
+  are snapped to the nearest valid `BIT_RATE_*` constant from the firmware's
+  `UartBautRate` enum so an out-of-set value can never name an undefined macro.
+  A change to `BIT_RATE_DEFAULT` forces a reconfigure + reflash, like the
+  existing SSL/LFS toggles.
+
 ## [0.3.1] - 2026-06-19
 
 ### Fixed

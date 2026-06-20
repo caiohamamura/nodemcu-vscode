@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Shell } from "../util/shell";
 import { ToolchainLocator, cmakeConfigureCommand, cmakeBuildCommand } from "./toolchain";
-import { writeUserModulesHeader, diffSelectedModules, readSelectedModules, writeUserConfigSsl, writeUserConfigLfs, isTlsEnabled } from "./userModulesWriter";
+import { writeUserModulesHeader, diffSelectedModules, readSelectedModules, writeUserConfigSsl, writeUserConfigLfs, writeUserConfigBitRate, isTlsEnabled } from "./userModulesWriter";
 import { parseProblems, summarize } from "./outputParser";
 import { appModulesDir, defaultBuildDir, userModulesHeader, userConfigHeader, binOutput, toolchainBinDirs } from "../util/paths";
 import type { NodemcuConfig } from "../config/nodemcuIni";
@@ -51,6 +51,11 @@ export class BuildManager {
     // layout, so a change here forces a reconfigure + reflash just like the SSL
     // toggle above.
     const lfsChanged = writeUserConfigLfs(userConfigHeader(ctx.firmwarePath), ctx.config.build.lfs_size);
+    // Sync the firmware boot UART speed (BIT_RATE_DEFAULT) with [nodemcu] baud so
+    // the flashed device comes up at the configured rate instead of the firmware
+    // default. This is a source edit (user_config.h), so a change forces a
+    // reconfigure + reflash like the SSL/LFS toggles above.
+    const bitRateChanged = writeUserConfigBitRate(userConfigHeader(ctx.firmwarePath), ctx.config.nodemcu.baud);
     const buildDir = defaultBuildDir(ctx.firmwarePath);
     const modulesSrcDir = appModulesDir(ctx.firmwarePath);
     // A build dir counts as "configured" only if CMake finished the generate
@@ -72,7 +77,7 @@ export class BuildManager {
     // device's LFS loader rejects, so treat a Lua-flavour change as needing a
     // reconfigure.
     const luaFlavourChanged = !buildDirMissing && this.luaFlavourChanged(buildDir, ctx.config);
-    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0 || sslChanged || lfsChanged || luaFlavourChanged;
+    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0 || sslChanged || lfsChanged || bitRateChanged || luaFlavourChanged;
     if (needsReconfigure) {
       // The firmware is a CMake superbuild: the real compile runs inside an
       // ExternalProject whose build step is gated by stamp files that the

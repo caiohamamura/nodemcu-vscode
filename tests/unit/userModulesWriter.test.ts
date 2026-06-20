@@ -13,6 +13,8 @@ import {
   writeUserConfigSsl,
   setUserConfigLfs,
   writeUserConfigLfs,
+  setUserConfigBitRate,
+  writeUserConfigBitRate,
 } from "../../src/build/userModulesWriter";
 import { defaultConfig } from "../../src/config/nodemcuIni";
 
@@ -181,6 +183,49 @@ describe("user_config.h LFS partition toggling", () => {
 
   it("writeUserConfigLfs is a no-op when the file is missing", () => {
     expect(writeUserConfigLfs(path.join(tmp, "nope.h"), 0x20000)).toBe(false);
+  });
+});
+
+describe("user_config.h boot UART baud (BIT_RATE_DEFAULT)", () => {
+  // Mirrors the real header: the active default line plus the autobaud line,
+  // which must NOT be matched (it is commented out).
+  const sample = [
+    "#define BIT_RATE_DEFAULT BIT_RATE_115200",
+    "//#define BIT_RATE_AUTOBAUD",
+  ].join("\n") + "\n";
+
+  it("rewrites BIT_RATE_DEFAULT to the configured baud", () => {
+    const out = setUserConfigBitRate(sample, 460800);
+    expect(out).toMatch(/^#define BIT_RATE_DEFAULT BIT_RATE_460800$/m);
+    // The autobaud line is left untouched.
+    expect(out).toMatch(/^\/\/#define BIT_RATE_AUTOBAUD$/m);
+  });
+
+  it("snaps an unsupported baud to the nearest valid constant", () => {
+    const out = setUserConfigBitRate(sample, 250000);
+    expect(out).toMatch(/^#define BIT_RATE_DEFAULT BIT_RATE_230400$/m);
+  });
+
+  it("falls back to 115200 for invalid baud values", () => {
+    const out = setUserConfigBitRate(sample, 0);
+    expect(out).toMatch(/^#define BIT_RATE_DEFAULT BIT_RATE_115200$/m);
+  });
+
+  it("leaves content unchanged when no BIT_RATE_DEFAULT line exists", () => {
+    const noLine = "#define SOMETHING 1\n";
+    expect(setUserConfigBitRate(noLine, 460800)).toBe(noLine);
+  });
+
+  it("writeUserConfigBitRate reports whether the file changed and is idempotent", () => {
+    const headerPath = path.join(tmp, "user_config.h");
+    fs.writeFileSync(headerPath, sample, "utf-8");
+    expect(writeUserConfigBitRate(headerPath, 460800)).toBe(true);
+    expect(writeUserConfigBitRate(headerPath, 460800)).toBe(false);
+    expect(fs.readFileSync(headerPath, "utf-8")).toMatch(/^#define BIT_RATE_DEFAULT BIT_RATE_460800$/m);
+  });
+
+  it("writeUserConfigBitRate is a no-op when the file is missing", () => {
+    expect(writeUserConfigBitRate(path.join(tmp, "nope.h"), 460800)).toBe(false);
   });
 });
 

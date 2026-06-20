@@ -199,3 +199,42 @@ export function writeUserConfigLfs(headerPath: string, sizeBytes: number): boole
   return true;
 }
 
+// Baud rates the firmware UART driver recognizes (NodeMCU app/include/driver/uart.h
+// UartBautRate enum). BIT_RATE_DEFAULT must name one of these constants, whose value
+// equals the baud, so an out-of-set baud would name an undefined macro and fail to
+// compile. We map the nodemcu.ini baud onto the nearest valid constant.
+const FIRMWARE_BIT_RATES = [
+  300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 74880,
+  115200, 230400, 460800, 921600, 1843200, 3686400,
+];
+const DEFAULT_BIT_RATE = 115200;
+
+/**
+ * Sync the firmware boot UART speed in `app/include/user_config.h` with the
+ * nodemcu.ini `[nodemcu] baud`. The firmware ships `#define BIT_RATE_DEFAULT
+ * BIT_RATE_115200`; without this the device always boots at the firmware default
+ * and ignores the configured baud. `baud` is mapped onto the nearest valid
+ * `BIT_RATE_*` constant (the enum value equals the baud) so an arbitrary number
+ * never names an undefined macro. Pure string transform; only the single
+ * `#define BIT_RATE_DEFAULT` line is touched (the `//#define BIT_RATE_AUTOBAUD`
+ * line is left alone since the regex requires a contiguous `#define`).
+ */
+export function setUserConfigBitRate(content: string, baud: number): string {
+  const rateRe = /^[ \t]*#define[ \t]+BIT_RATE_DEFAULT\b.*$/m;
+  if (!rateRe.test(content)) return content;
+  const rate = Number.isFinite(baud) && baud > 0
+    ? FIRMWARE_BIT_RATES.reduce((a, b) => (Math.abs(b - baud) < Math.abs(a - baud) ? b : a))
+    : DEFAULT_BIT_RATE;
+  return content.replace(rateRe, `#define BIT_RATE_DEFAULT BIT_RATE_${rate}`);
+}
+
+/** Apply {@link setUserConfigBitRate} to a file on disk. Returns true if it changed. */
+export function writeUserConfigBitRate(headerPath: string, baud: number): boolean {
+  if (!fs.existsSync(headerPath)) return false;
+  const before = fs.readFileSync(headerPath, "utf-8");
+  const after = setUserConfigBitRate(before, baud);
+  if (after === before) return false;
+  fs.writeFileSync(headerPath, after, "utf-8");
+  return true;
+}
+
