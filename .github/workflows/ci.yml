@@ -62,5 +62,8 @@ jobs:
           files: "*.vsix"
           generate_release_notes: true
 
-      - name: Publish to Open VSX
-        run: npx ovsx publish --pat ${{ secrets.OVSX_PAT }}
+      # Open VSX auto-publish disabled — release the VSIX from the GitHub
+      # release manually for now. Re-enable when ready to publish to the
+      # registry again.
+      # - name: Publish to Open VSX
+      #   run: npx ovsx publish --pat ${{ secrets.OVSX_PAT }}

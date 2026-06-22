@@ -107,7 +107,7 @@ export const DEFAULT_PREBUILT_RELEASE: PrebuiltReleaseConfig = {
   // but the assets themselves are built against the firmware fork
   // (caiohamamura/nodemcu-firmware) — those two tags drift
   // independently by design.
-  releaseTag: "v0.3.1",
+  releaseTag: "v0.3.3",
   firmwareTag: MANAGED_FIRMWARE_TAG,
 };
 

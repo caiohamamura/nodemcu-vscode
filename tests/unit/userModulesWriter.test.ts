@@ -108,7 +108,7 @@ describe("user_config.h SSL toggling for TLS", () => {
     const out = setUserConfigSsl(sample, true);
     expect(out).toMatch(/^#define CLIENT_SSL_ENABLE$/m);
     expect(out).not.toMatch(/^\/\/#define CLIENT_SSL_ENABLE$/m);
-    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 16384$/m);
+    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 4096$/m);
   });
 
   it("honors a custom buffer size", () => {
@@ -118,7 +118,7 @@ describe("user_config.h SSL toggling for TLS", () => {
 
   it("falls back to the default buffer size for invalid values", () => {
     const out = setUserConfigSsl(sample, true, 0);
-    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 16384$/m);
+    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 4096$/m);
   });
 
   it("comments CLIENT_SSL_ENABLE back out when off and leaves the buffer", () => {
@@ -126,7 +126,7 @@ describe("user_config.h SSL toggling for TLS", () => {
     const out = setUserConfigSsl(enabled, false);
     expect(out).toMatch(/^\/\/#define CLIENT_SSL_ENABLE$/m);
     // buffer is only meaningful with SSL on, so we don't churn it back down
-    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 16384$/m);
+    expect(out).toMatch(/^#define SSL_BUFFER_SIZE 4096$/m);
   });
 
   it("writeUserConfigSsl reports whether the file changed and is idempotent", () => {

@@ -2,7 +2,7 @@
   "name": "nodemcu-vscode",
   "displayName": "NodeMCU Lua",
   "description": "Cross-platform Lua firmware development for NodeMCU/ESP8266: build, flash, upload, with workspace autosync (Ctrl+S).",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "caiohamamura",
   "license": "MIT",
   "engines": {
@@ -244,15 +244,15 @@
       "commandPalette": [
         {
           "command": "nodemcu-vscode.enableLfs",
-          "when": "nodemcu.projectValid && nodemcu.hasHostCompiler"
+          "when": "nodemcu.projectValid"
         },
         {
           "command": "nodemcu-vscode.disableLfs",
-          "when": "nodemcu.projectValid && nodemcu.hasHostCompiler"
+          "when": "nodemcu.projectValid"
         },
         {
           "command": "nodemcu-vscode.buildAndDeployLfs",
-          "when": "nodemcu.projectValid && nodemcu.hasHostCompiler"
+          "when": "nodemcu.projectValid"
         }
       ],
       "view/item/context": [

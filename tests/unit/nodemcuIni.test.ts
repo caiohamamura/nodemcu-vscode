@@ -14,8 +14,8 @@ describe("parseIni", () => {
   it("returns defaults on empty input", () => {
     const cfg = parseIni("");
     expect(cfg.nodemcu.firmware_path).toBeUndefined();
-    expect(cfg.nodemcu.lua_version).toBe("53");
-    expect(cfg.nodemcu.baud).toBe(115200);
+    expect(cfg.nodemcu.lua_version).toBe("51");
+    expect(cfg.nodemcu.baud).toBe(460800);
   });
 
   it("parses all nodemcu section fields", () => {
@@ -49,7 +49,7 @@ flash_mode = bogus
 flash_freq = 999
 `;
     const cfg = parseIni(ini);
-    expect(cfg.nodemcu.lua_version).toBe("53");
+    expect(cfg.nodemcu.lua_version).toBe("51");
     expect(cfg.nodemcu.flash_mode).toBe("dio");
     expect(cfg.nodemcu.flash_freq).toBe("80m");
   });
@@ -156,18 +156,18 @@ describe("serializeIni", () => {
 });
 
 describe("ssl_buffer_size parsing", () => {
-  it("defaults to 16384 when absent", () => {
-    expect(parseIni("").build.ssl_buffer_size).toBe(16384);
+  it("defaults to 4096 when absent", () => {
+    expect(parseIni("").build.ssl_buffer_size).toBe(4096);
   });
 
   it("reads an explicit value from [build]", () => {
-    const cfg = parseIni("[build]\nssl_buffer_size = 4096\n");
-    expect(cfg.build.ssl_buffer_size).toBe(4096);
+    const cfg = parseIni("[build]\nssl_buffer_size = 8192\n");
+    expect(cfg.build.ssl_buffer_size).toBe(8192);
   });
 
   it("falls back to the default for non-positive or invalid values", () => {
-    expect(parseIni("[build]\nssl_buffer_size = 0\n").build.ssl_buffer_size).toBe(16384);
-    expect(parseIni("[build]\nssl_buffer_size = notanumber\n").build.ssl_buffer_size).toBe(16384);
+    expect(parseIni("[build]\nssl_buffer_size = 0\n").build.ssl_buffer_size).toBe(4096);
+    expect(parseIni("[build]\nssl_buffer_size = notanumber\n").build.ssl_buffer_size).toBe(4096);
   });
 });
 

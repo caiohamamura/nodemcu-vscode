@@ -2,14 +2,32 @@
 
 All notable changes to the NodeMCU VSCode extension are documented here.
 
-## [0.3.2] - 2026-06-19
+## [0.3.3] - 2026-06-22
+
+### Fixed
+- **LFS commands were hidden from the command palette.** "Enable LFS",
+  "Disable LFS", and "Build & Deploy LFS Image" were gated behind a
+  `nodemcu.hasHostCompiler` context that required a local C compiler (or a
+  successful prebuilt probe at startup). Since `luac.cross` is now always
+  fetched as a prebuilt binary from the GitHub release, the gate is removed —
+  the LFS commands are available on any valid project (`when:
+  nodemcu.projectValid`). The startup compiler probe was dropped.
+
+### Changed
+- **Default `nodemcu.ini` values** (new projects + bootstrap template):
+  - `lua_version` `53` → `51`
+  - `baud` / `upload_baud` `115200` → `460800`
+  - `[build] ssl_buffer_size` `16384` → `4096` (matches the firmware-shipped
+    default; raise to `8192`/`16384` for large TLS handshakes)
+
+## [0.3.2] - 2026-06-20
 
 ### Fixed
 - **Boot UART baud now honours `[nodemcu] baud`** — `BuildManager` syncs the
   firmware's `BIT_RATE_DEFAULT` constant in `app/include/user_config.h` with the
   configured baud on every build. Previously the device always booted at the
   firmware default (115200) and ignored the configured rate, which made the
-  default build/upload baud setting effectively a no-op. Arbitrary baud values
+  build/upload baud setting effectively a no-op. Arbitrary baud values
   are snapped to the nearest valid `BIT_RATE_*` constant from the firmware's
   `UartBautRate` enum so an out-of-set value can never name an undefined macro.
   A change to `BIT_RATE_DEFAULT` forces a reconfigure + reflash, like the

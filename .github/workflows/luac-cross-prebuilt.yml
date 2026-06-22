@@ -5,27 +5,36 @@ name: Build prebuilt luac.cross
 # release that matches the firmware fork tag (e.g. `v3.1.0`).
 #
 # Triggered:
-#   - manually via `workflow_dispatch` (input: firmwareTag)
+#   - automatically on every `v*` tag push (alongside the Build and Publish
+#     workflow), so a release ships its prebuilt binaries together with the VSIX
+#   - manually via `workflow_dispatch` (inputs: firmwareTag, releaseTag)
 #
-# Manual-only because the firmware fork tag (e.g. `v3.1.0`) and the extension
-# release tag (e.g. `v0.2.6`) are independent — pushing a `v*` extension tag
-# would otherwise try to download a non-existent firmware zip. Run this
-# workflow whenever the firmware fork gets a new tag (or a new LFS-affecting
-# patch) and the resulting prebuilts are picked up by the extension's
-# `DEFAULT_PREBUILT_RELEASE.releaseTag` (see src/firmware/prebuiltLuacCross.ts).
+# The firmware fork tag (e.g. `v3.1.0`) and the extension release tag (e.g.
+# `v0.3.3`) are independent. They are resolved separately:
+#   - FW_TAG (which firmware zip to download + build): the `firmwareTag` input on
+#     a manual run, else the fixed `v3.1.0` default on a tag push. This must track
+#     `MANAGED_FIRMWARE_TAG` in src/firmware/managedFirmware.ts.
+#   - release tag (where the archives are attached): the `releaseTag` input on a
+#     manual run, else `github.ref_name` (the pushed extension tag). This must
+#     match `DEFAULT_PREBUILT_RELEASE.releaseTag` in src/firmware/prebuiltLuacCross.ts.
 #
 # The NodeMCU firmware itself is downloaded from caiohamamura/nodemcu-firmware
-# at the given tag and built only up to the host tool stage — the xtensa
-# firmware compile is skipped (we don't need the firmware binary, just
-# `luac.cross` / `luac.cross.int`).
+# at FW_TAG and built only up to the host tool stage — the xtensa firmware
+# compile is skipped (we don't need the firmware binary, just `luac.cross` /
+# `luac.cross.int`).
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       firmwareTag:
         description: "Firmware fork tag to build against (e.g. v3.1.0)"
         required: true
         default: "v3.1.0"
+      releaseTag:
+        description: "Extension release tag to attach archives to (e.g. v0.3.3). Defaults to the pushed tag."
+        required: false
 
 permissions:
   contents: write
@@ -62,7 +71,10 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     env:
-      FW_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.firmwareTag || github.ref_name }}
+      # Firmware fork tag to build against. Manual run: the firmwareTag input.
+      # Tag push: the fixed v3.1.0 default (the extension tag in github.ref_name
+      # is NOT a firmware tag). Keep in sync with MANAGED_FIRMWARE_TAG.
+      FW_TAG: ${{ github.event.inputs.firmwareTag || 'v3.1.0' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -240,8 +252,11 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.3.1
+          # Extension release tag to attach to: the releaseTag input on a manual
+          # run, else the pushed tag. action-gh-release upserts, so it creates
+          # the release if the Build and Publish workflow hasn't yet. The
+          # prebuilt binaries are indexed by this release tag (not the firmware
+          # tag) — must match DEFAULT_PREBUILT_RELEASE.releaseTag.
+          tag_name: ${{ github.event.inputs.releaseTag || github.ref_name }}
           files: ${{ github.workspace }}/firmware/inner/${{ steps.package.outputs.asset }}
-          # Release v0.3.1 must exist in the extension repo; the prebuilt
-          # binaries are indexed by this release tag (not the firmware tag).
           fail_on_unmatched_files: true

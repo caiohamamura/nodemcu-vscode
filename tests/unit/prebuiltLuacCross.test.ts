@@ -15,8 +15,11 @@ import {
 } from "../../src/firmware/prebuiltLuacCross";
 import { defaultConfig, type NodemcuConfig } from "../../src/config/nodemcuIni";
 
+// The download/install fixtures below ship lua53 binaries, so pin the flavour
+// explicitly rather than relying on the project default (which is lua51).
 function cfg(): NodemcuConfig {
-  return defaultConfig();
+  const c = defaultConfig();
+  return { ...c, nodemcu: { ...c.nodemcu, lua_version: "53" } };
 }
 
 function withLua(config: NodemcuConfig, lua: "51" | "53", integral: boolean): NodemcuConfig {

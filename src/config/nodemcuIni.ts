@@ -43,10 +43,10 @@ export interface NodemcuConfig {
   build: { parallel: boolean; verbose: boolean; ssl_buffer_size: number; lfs_size: number };
 }
 
-// mbed TLS record buffer size used when the tls module enables CLIENT_SSL. The
-// firmware ships 4096, which is too small for most real TLS handshakes; 16384
-// (a full TLS record) is the recommended default (docs/modules/tls.md).
-export const DEFAULT_SSL_BUFFER_SIZE = 16384;
+// mbed TLS record buffer size used when the tls module enables CLIENT_SSL. This
+// matches the firmware-shipped default of 4096; users can raise it to 8192/16384
+// for real TLS handshakes that need a full record (docs/modules/tls.md).
+export const DEFAULT_SSL_BUFFER_SIZE = 4096;
 
 // Buffer size written into [build] ssl_buffer_size when the tls module is first
 // enabled. 8192 is the smallest size that completes real handshakes while
@@ -60,12 +60,12 @@ export const TLS_ENABLE_SSL_BUFFER_SIZE = 8192;
 export const DEFAULT_LFS_SIZE = 0x20000;
 
 const DEFAULT_NODEMCU: NodemcuSection = {
-  lua_version: "53",
+  lua_version: "51",
   lua_number_integral: false,
   lua_number_64bits: false,
   port: "",
-  baud: 115200,
-  upload_baud: 115200,
+  baud: 460800,
+  upload_baud: 460800,
   flash_mode: "dio",
   flash_freq: "80m",
   flash_size: "4MB",
@@ -131,7 +131,7 @@ export function parseIni(content: string): NodemcuConfig {
 
   config.nodemcu.firmware_path = n.firmware_path !== undefined ? String(n.firmware_path) : DEFAULT_NODEMCU.firmware_path;
   const luaVer = coerceString(n.lua_version, DEFAULT_NODEMCU.lua_version);
-  config.nodemcu.lua_version = luaVer === "51" || luaVer === "53" ? luaVer : "53";
+  config.nodemcu.lua_version = luaVer === "51" || luaVer === "53" ? luaVer : DEFAULT_NODEMCU.lua_version;
   config.nodemcu.lua_number_integral = coerceBool(n.lua_number_integral, DEFAULT_NODEMCU.lua_number_integral);
   config.nodemcu.lua_number_64bits = coerceBool(n.lua_number_64bits, DEFAULT_NODEMCU.lua_number_64bits);
   config.nodemcu.port = coerceString(n.port, DEFAULT_NODEMCU.port);

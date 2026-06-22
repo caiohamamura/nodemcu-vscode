@@ -216,12 +216,12 @@ Example:
 
 ```ini
 [nodemcu]
-lua_version = 53
+lua_version = 51
 lua_number_integral = false
 lua_number_64bits = false
 port =
-baud = 115200
-upload_baud = 115200
+baud = 460800
+upload_baud = 460800
 src = src
 flash_mode = dio
 flash_freq = 80m

@@ -3,9 +3,10 @@
  * DevTools Protocol against a REAL ESP8266, exercising the LFS (Lua Flash Store)
  * UI flow end to end:
  *
- *   1. The LFS commands are gated on a host C compiler — the command palette
- *      lists "NodeMCU: Enable LFS (Lua Flash Store)" only because the extension
- *      detected `cc`/`gcc` and set the `nodemcu.hasHostCompiler` context key.
+ *   1. The LFS commands are always available on a valid project — the command
+ *      palette lists "NodeMCU: Enable LFS (Lua Flash Store)" etc. luac.cross is
+ *      fetched as a prebuilt binary at deploy time, so no host C compiler is
+ *      required.
  *   2. Running "NodeMCU: Enable LFS" writes `[build] lfs_size`, rebuilds + flashes
  *      firmware with the LFS partition, compiles the project's Lua into an LFS
  *      image, uploads it, and `node.flashreload`s it. The toast reports the
@@ -15,9 +16,10 @@
  * Selectors/timings were proven interactively first (AGENTS §9.8) against a live
  * EDH before being encoded here.
  *
- * Requires hardware + a host C compiler + the VS Code CLI, so it only runs when
- * NODEMCU_VSCODE_E2E_HARDWARE=1 (otherwise skipped). The firmware build needs
- * cmake — either on PATH (e.g. linuxbrew) or the extension's managed cmake.
+ * Requires hardware + the VS Code CLI, so it only runs when
+ * NODEMCU_VSCODE_E2E_HARDWARE=1 (otherwise skipped). luac.cross is downloaded as
+ * a prebuilt binary; the firmware build needs cmake — either on PATH (e.g.
+ * linuxbrew) or the extension's managed cmake.
  *
  * Required env:
  *   NODEMCU_VSCODE_E2E_HARDWARE=1
@@ -54,18 +56,11 @@ const CODE_CMD =
     ? path.join(process.env.LOCALAPPDATA || "", "Programs", "Microsoft VS Code", "bin", "code.cmd")
     : "/usr/bin/code");
 const hasCode = fs.existsSync(CODE_CMD);
-function hasHostCompiler(): boolean {
-  for (const c of ["cc", "gcc", "clang"]) {
-    const r = child_process.spawnSync(process.platform === "win32" ? "where" : "which", [c], { encoding: "utf-8" });
-    if (r.status === 0 && (r.stdout || "").trim()) return true;
-  }
-  return false;
-}
 const DEFAULT_DISPLAY =
   process.platform === "linux" && !process.env.DISPLAY && fs.existsSync("/tmp/.X11-unix/X99") ? ":99" : process.env.DISPLAY;
 
 const describe_ =
-  process.env.NODEMCU_VSCODE_E2E_HARDWARE === "1" && hasCode && hasHostCompiler() ? describe : describe.skip;
+  process.env.NODEMCU_VSCODE_E2E_HARDWARE === "1" && hasCode ? describe : describe.skip;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -353,7 +348,7 @@ describe_("NodeMCU LFS e2e (CDP + hardware)", () => {
     return fs.existsSync(iniPath) ? fs.readFileSync(iniPath, "utf-8") : "";
   }
 
-  it("1. LFS commands are gated on a host C compiler (hasHostCompiler context)", async () => {
+  it("1. LFS commands are always available on a valid project (prebuilt luac.cross)", async () => {
     const rows = await paletteRows(">NodeMCU");
     expect(rows.length, "NodeMCU commands should be listed").toBeGreaterThan(0);
     expect(rows.some((r) => /Enable LFS/i.test(r)), `Enable LFS should be available. Rows: ${rows.join(", ")}`).toBe(true);

@@ -216,7 +216,7 @@ Extension Development Host (see §9).
 | `src/device/liveEditFs.ts` | `LiveEditFileSystemProvider`, `LIVE_EDIT_SCHEME` | Writable in-memory `nodemcu-live:` documents for Device Files live edit; saves are uploaded by `extension.ts`. |
 | `src/flash/autoPort.ts` | `chooseAutoPort`, `isNodeMcuLikePort` | Pure auto-selection policy: keep available configured port; otherwise select only an unambiguous single or NodeMCU-like port. |
 | `src/build/toolchain.ts` | `ToolchainLocator`, `cmakeConfigureCommand`, `cmakeBuildCommand`, `esptoolFlashCommand`, `normalizeFlashSize` | Detects Ninja > MSYS Makefiles > NMake > MinGW > Unix Makefiles; normalizes `4M` → `4MB`. |
-| `src/build/userModulesWriter.ts` | `generateUserModulesHeader`, `writeUserModulesHeader`, `readSelectedModules`, `diffSelectedModules`, `isCModulesConfigChanged`, `isTlsEnabled`, `setUserConfigSsl`, `writeUserConfigSsl` | Hardcoded `KNOWN_MODULES` set; emits `LUA_USE_MODULES_<NAME>` defines. `MODULE_DEPENDENCIES` force-enables deps (`tls` → `http`). `writeUserConfigSsl` toggles `CLIENT_SSL_ENABLE` / `SSL_BUFFER_SIZE` in `app/include/user_config.h` to match the `tls` module (buffer size from `[build] ssl_buffer_size`, default `16384`); `BuildManager.build` calls it and folds its return into `needsReconfigure`. |
+| `src/build/userModulesWriter.ts` | `generateUserModulesHeader`, `writeUserModulesHeader`, `readSelectedModules`, `diffSelectedModules`, `isCModulesConfigChanged`, `isTlsEnabled`, `setUserConfigSsl`, `writeUserConfigSsl` | Hardcoded `KNOWN_MODULES` set; emits `LUA_USE_MODULES_<NAME>` defines. `MODULE_DEPENDENCIES` force-enables deps (`tls` → `http`). `writeUserConfigSsl` toggles `CLIENT_SSL_ENABLE` / `SSL_BUFFER_SIZE` in `app/include/user_config.h` to match the `tls` module (buffer size from `[build] ssl_buffer_size`, default `4096`); `BuildManager.build` calls it and folds its return into `needsReconfigure`. |
 | `src/build/outputParser.ts` | `parseProblems`, `summarize`, `extractModuleBuildSummary` | Pure regex; no vscode dependency. |
 | `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
@@ -270,12 +270,12 @@ Extension Development Host (see §9).
 ```ini
 [nodemcu]
 firmware_path =                  # empty → use managed firmware
-lua_version = 53                 # 51 or 53
+lua_version = 51                 # 51 or 53
 lua_number_integral = false      # mutually exclusive with lua_number_64bits
 lua_number_64bits = false
 port =                           # e.g. /dev/ttyUSB0, COM3
-baud = 115200
-upload_baud = 115200
+baud = 460800
+upload_baud = 460800
 flash_mode = dio                 # dio|qio|dout|qout
 flash_freq = 40m                 # 40m|26m|20m|80m
 flash_size = 1M                  # 1M|4M|512K|... or "detect"/"keep"
@@ -299,7 +299,7 @@ extra_files = spiffs.bin@0x100000  # comma list of "path@offset"
 [build]
 parallel = true
 verbose = false
-ssl_buffer_size = 16384            # mbed TLS record buffer when tls/CLIENT_SSL is on
+ssl_buffer_size = 4096             # mbed TLS record buffer when tls/CLIENT_SSL is on
 ```
 
 The `resources/templates/nodemcu.ini` is the bootstrap template. The default
@@ -312,12 +312,8 @@ LFS stores Lua modules in flash and runs them with near-zero RAM overhead. The
 LFS image is compiled by `luac.cross`, a host tool. The extension obtains it in
 one of two ways:
 
-1. **Build from source** (existing path): when a host C compiler (`cc`/`gcc`) is
-   detected, `BuildManager` compiles `luac.cross` from the firmware source with
-   `-DBUILD_HOST_TOOLS=ON`. The host tools are pre-built with a **host-clean PATH**
-   before the firmware build — otherwise the host gcc grabs the xtensa `as` off
-   PATH and dies with `as: unrecognized option '--64'`.
-2. **Pre-built binary** (new path): `src/firmware/prebuiltLuacCross.ts` resolves
+1. **Pre-built binary** (default path, no host compiler required):
+   `src/firmware/prebuiltLuacCross.ts` resolves
    and downloads the correct binary for the current Lua **flavour** + host target
    from a GitHub release. The flavour (`luacFlavour(cfg)`) is one of `lua51`,
    `lua51-int` (`-DLUA_NUMBER_INTEGRAL`), or `lua53` — so a downloaded `luac.cross`
@@ -329,20 +325,29 @@ one of two ways:
    `installPrebuiltLuacCross` copies it to `luacCrossPath(fw)` so the rest of the
    pipeline is unchanged. Cached at
    `<globalStorageUri>/luac-cross/<tag>/<flavour>/<platform>-<arch>/`.
-   `updateHostCompilerContext()` sets `nodemcu.hasHostCompiler` true when a host
-   compiler is on PATH **or** a prebuilt resolves for the current config.
+2. **Build from source** (fallback): when a host C compiler (`cc`/`gcc`) is
+   present, `BuildManager` compiles `luac.cross` from the firmware source with
+   `-DBUILD_HOST_TOOLS=ON`. The host tools are pre-built with a **host-clean PATH**
+   before the firmware build — otherwise the host gcc grabs the xtensa `as` off
+   PATH and dies with `as: unrecognized option '--64'`.
+
+The LFS commands (`enableLfs`, `disableLfs`, `buildAndDeployLfs`) are **always
+available on a valid project** (palette `when: nodemcu.projectValid`) — no host
+compiler is required because the prebuilt binary is the default.
 
 `deployLfsImage()` prefers the firmware-build binary; if absent, resolves the
 pre-built one on demand (first LFS use), then falls back to an error message if
 both sources fail. **For the pre-built binaries to exist, the
 `.github/workflows/luac-cross-prebuilt.yml` workflow must run** — it builds
 `luac.cross` for each flavour × platform/arch (host-tool stage only) and attaches
-the archives to the current extension release (e.g. `v0.3.1`) in
-`caiohamamura/nodemcu-vscode`. It's `workflow_dispatch`-only (firmware tag and
-extension tag are independent — bump both, the workflow's `tag_name` must match
-`DEFAULT_PREBUILT_RELEASE.releaseTag`). Until those assets exist, users without
-a host compiler will see a download-failed error and must install a host
-compiler.
+the archives to the current extension release (e.g. `v0.3.3`) in
+`caiohamamura/nodemcu-vscode`. It runs **automatically on every `v*` tag push**
+(alongside `ci.yml`) and can also be dispatched manually (inputs `firmwareTag` +
+`releaseTag`). The firmware tag (`FW_TAG`, the firmware fork zip it builds —
+falls back to `v3.1.0` on a tag push) and the extension release tag (where it
+attaches, `github.ref_name` on a tag push) are independent; the release tag must
+match `DEFAULT_PREBUILT_RELEASE.releaseTag`. Until those assets exist, LFS deploy
+fails with a download error unless a host compiler is present to build locally.
 
 - **Config**: `[build] lfs_size` (hex like `0x20000` or decimal; `0` = off,
   default off). `DEFAULT_LFS_SIZE = 0x20000` (128 KB) is written by **Enable LFS**.
@@ -357,7 +362,7 @@ compiler.
 - **Deploy** (`extension.ts deployLfsImage` + `SerialDeviceClient.flashReload`):
   upload `lfs.img`, then `node.flashreload("lfs.img")` (reboots into the new
   flash store). Commands: `enableLfs`, `disableLfs`, `buildAndDeployLfs` (palette,
-  `when: nodemcu.hasHostCompiler`). On-device, LFS modules are accessed via
+  `when: nodemcu.projectValid`). On-device, LFS modules are accessed via
   `node.flashindex(name)` / `node.LFS.get(name)` (NodeMCU's `require` does not
   always wire an LFS searcher).
 - **LFS-aware sync (no SPIFFS duplication).** When `lfs_size>0`, the LFS-bound
@@ -484,8 +489,13 @@ The CI workflow (`.github/workflows/ci.yml`) handles build + publish:
   → upload `dist/` as an artifact.
 - **publish job:** `npm ci` → `npm run build` → `npm run package` → create the
   GitHub release (`softprops/action-gh-release@v2` with `generate_release_notes:
-  true`) → publish the VSIX to Open VSX with
-  `npx ovsx publish --pat ${{ secrets.OVSX_PAT }}`.
+  true`). **Open VSX auto-publish is currently commented out** (the
+  `npx ovsx publish` step) — ship the VSIX from the GitHub release manually until
+  it's re-enabled.
+
+The prebuilt `luac.cross` workflow (`luac-cross-prebuilt.yml`) **also triggers on
+the same `v*` tag push** (§5.5), so a release builds + attaches its prebuilt
+binaries alongside the VSIX automatically — no separate manual dispatch.
 
 To cut a new release:
 
@@ -496,14 +506,13 @@ To cut a new release:
    what users see in the marketplace / README.
 3. If the new release should also host prebuilt `luac.cross` assets (almost
    always yes — see §5.5): bump
-   `src/firmware/prebuiltLuacCross.ts:DEFAULT_PREBUILT_RELEASE.releaseTag`
-   *and* `tag_name` in
-   `.github/workflows/luac-cross-prebuilt.yml` to the new release tag, and
-   re-run that workflow (`gh workflow run luac-cross-prebuilt.yml
-   -f firmwareTag=v3.1.0`).
+   `src/firmware/prebuiltLuacCross.ts:DEFAULT_PREBUILT_RELEASE.releaseTag` to the
+   new release tag (the workflow's `tag_name` now resolves from `github.ref_name`
+   automatically). Only touch `FW_TAG`/`MANAGED_FIRMWARE_TAG` if the firmware
+   fork tag itself changed.
 4. Commit + push the version bump, then `git tag v<version> && git push origin
-   v<version>`. The `publish` job will create the release + VSIX + Open VSX
-   upload.
+   v<version>`. The `publish` job creates the GitHub release + VSIX, and the
+   prebuilt workflow attaches the `luac.cross` archives to the same release.
 
 **Gotcha:** `vsce` refuses to republish a version that already exists. To
 re-release the same VSIX you must bump the version (e.g. v0.3.0 → v0.3.1).
