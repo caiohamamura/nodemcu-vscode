@@ -55,23 +55,23 @@ describe("luacFlavourInfo", () => {
 
 describe("prebuiltAssetName", () => {
   it("encodes tag + flavour + target", () => {
-    expect(prebuiltAssetName({ platform: "linux", arch: "x64" }, "lua53", "v3.1.0"))
-      .toBe("luac-cross-v3.1.0-lua53-linux-x64.tar.gz");
+    expect(prebuiltAssetName({ platform: "linux", arch: "x64" }, "lua53", "v3.1.1"))
+      .toBe("luac-cross-v3.1.1-lua53-linux-x64.tar.gz");
   });
   it("uses zip for windows", () => {
-    expect(prebuiltAssetName({ platform: "win32", arch: "x64" }, "lua51-int", "v3.1.0"))
-      .toBe("luac-cross-v3.1.0-lua51-int-win32-x64.zip");
+    expect(prebuiltAssetName({ platform: "win32", arch: "x64" }, "lua51-int", "v3.1.1"))
+      .toBe("luac-cross-v3.1.1-lua51-int-win32-x64.zip");
   });
   it("uses tar.gz for macOS", () => {
-    expect(prebuiltAssetName({ platform: "darwin", arch: "arm64" }, "lua51", "v3.1.0"))
-      .toBe("luac-cross-v3.1.0-lua51-darwin-arm64.tar.gz");
+    expect(prebuiltAssetName({ platform: "darwin", arch: "arm64" }, "lua51", "v3.1.1"))
+      .toBe("luac-cross-v3.1.1-lua51-darwin-arm64.tar.gz");
   });
 });
 
 describe("prebuiltCachePath", () => {
   it("lays out <root>/luac-cross/<tag>/<flavour>/<platform-arch>/<binary>", () => {
-    const p = prebuiltCachePath("/storage", "v3.1.0", { platform: "linux", arch: "x64" }, "lua53", "luac.cross");
-    expect(p).toBe(path.join("/storage", "luac-cross", "v3.1.0", "lua53", "linux-x64", "luac.cross"));
+    const p = prebuiltCachePath("/storage", "v3.1.1", { platform: "linux", arch: "x64" }, "lua53", "luac.cross");
+    expect(p).toBe(path.join("/storage", "luac-cross", "v3.1.1", "lua53", "linux-x64", "luac.cross"));
   });
 });
 
@@ -126,7 +126,7 @@ describe("resolvePrebuiltLuacCross", () => {
       "#!/bin/sh\necho 'Lua 5.3.6  Copyright (C) 1994-2020 Lua.org, PUC-Rio'\n",
       { mode: 0o755 },
     );
-    const archive = path.join(dir, "luac-cross-v3.1.0-lua53-linux-x64.tar.gz");
+    const archive = path.join(dir, "luac-cross-v3.1.1-lua53-linux-x64.tar.gz");
     child_process.spawnSync("tar", ["-czf", archive, "-C", stageDir, "luac.cross"], { stdio: "pipe" });
     return archive;
   }
@@ -145,7 +145,7 @@ describe("resolvePrebuiltLuacCross", () => {
     expect(result, "expected a successful resolve").not.toBeNull();
     if (!result) return;
     expect(result.flavour).toBe("lua53");
-    expect(result.cachedPath).toBe(prebuiltCachePath(storageRoot, "v3.1.0", { platform: "linux", arch: "x64" }, "lua53", "luac.cross"));
+    expect(result.cachedPath).toBe(prebuiltCachePath(storageRoot, "v3.1.1", { platform: "linux", arch: "x64" }, "lua53", "luac.cross"));
     expect(fs.existsSync(result.cachedPath)).toBe(true);
     expect(fs.statSync(result.cachedPath).mode & 0o111).not.toBe(0); // executable
   });
@@ -169,7 +169,7 @@ describe("resolvePrebuiltLuacCross", () => {
     const stageDir = path.join(tmpRoot, "stage");
     fs.mkdirSync(stageDir, { recursive: true });
     fs.writeFileSync(path.join(stageDir, "luac.cross"), "#!/bin/sh\necho 'Lua 5.1.4'\n", { mode: 0o755 });
-    const archive = path.join(tmpRoot, "luac-cross-v3.1.0-lua53-linux-x64.tar.gz");
+    const archive = path.join(tmpRoot, "luac-cross-v3.1.1-lua53-linux-x64.tar.gz");
     require("node:child_process").spawnSync("tar", ["-czf", archive, "-C", stageDir, "luac.cross"], { stdio: "pipe" });
     servedAsset = archive;
 

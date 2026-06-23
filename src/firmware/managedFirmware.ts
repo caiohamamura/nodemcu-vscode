@@ -7,7 +7,7 @@ import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import extract from "extract-zip";
 
-export const MANAGED_FIRMWARE_TAG = "v3.1.0";
+export const MANAGED_FIRMWARE_TAG = "v3.1.1";
 export const MANAGED_FIRMWARE_URL = `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/${MANAGED_FIRMWARE_TAG}.zip`;
 
 const TOOLCHAIN_TARBALL = "xtensa-lx106-elf-win32-1.22.0-88-gde0bdc1-4.8.5.tar.gz";

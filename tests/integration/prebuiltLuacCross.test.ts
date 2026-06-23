@@ -75,7 +75,7 @@ describe_("prebuilt luac.cross integration", () => {
     expect(fs.existsSync(builtLuacPath), `luac.cross missing at ${builtLuacPath}`).toBe(true);
 
     // Wrap it in a tar.gz that matches the prebuilt asset name.
-    archivePath = path.join(tmpRoot, "luac-cross-v3.1.0-lua53-linux-x64.tar.gz");
+    archivePath = path.join(tmpRoot, "luac-cross-v3.1.1-lua53-linux-x64.tar.gz");
     child_process.spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(builtLuacPath), "luac.cross"], { stdio: "pipe" });
     expect(fs.existsSync(archivePath)).toBe(true);
 
@@ -118,7 +118,7 @@ describe_("prebuilt luac.cross integration", () => {
     if (!result) return;
     expect(result.flavour).toBe("lua53");
     expect(result.cachedPath).toBe(
-      prebuiltCachePath(storageRoot, "v3.1.0", { platform: "linux", arch: "x64" }, "lua53", "luac.cross"),
+      prebuiltCachePath(storageRoot, "v3.1.1", { platform: "linux", arch: "x64" }, "lua53", "luac.cross"),
     );
 
     // 2. Install into a scratch firmware build dir; mimic what the extension
