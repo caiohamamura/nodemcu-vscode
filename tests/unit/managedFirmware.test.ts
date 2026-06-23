@@ -43,7 +43,6 @@ describe("ensureManagedFirmware", () => {
 
     if (options.patches) {
       fs.writeFileSync(path.join(root, "app", "nodemcu-vscode-newlib.c"), "// fake newlib");
-      fs.writeFileSync(path.join(root, "tools", "luac_cross", "nodemcu-vscode-luac-assert.c"), "// fake luac assert");
     }
     if (options.marker) {
       fs.writeFileSync(path.join(root, ".nodemcu-vscode-managed-firmware.json"), JSON.stringify({ tag: MANAGED_FIRMWARE_TAG, url: "http://example.com" }));

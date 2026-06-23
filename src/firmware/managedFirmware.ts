@@ -16,7 +16,6 @@ const TOOLCHAIN_DIR = `esp8266-xtensa-lx106-elf-win32-1.22.0-88-gde0bdc1-4.8.5`;
 
 const MARKER_FILE = ".nodemcu-vscode-managed-firmware.json";
 const NEWLIB_COMPAT_SOURCE = path.join("app", "nodemcu-vscode-newlib.c");
-const LUAC_ASSERT_COMPAT_SOURCE = path.join("tools", "luac_cross", "nodemcu-vscode-luac-assert.c");
 
 const SUBMODULES = [
   {
@@ -98,7 +97,6 @@ async function writeMarker(markerPath: string): Promise<void> {
 function isManagedFirmwareReady(dir: string): boolean {
   if (!isUsableExtractedFirmwareRoot(dir)
     || !fs.existsSync(path.join(dir, NEWLIB_COMPAT_SOURCE))
-    || !fs.existsSync(path.join(dir, LUAC_ASSERT_COMPAT_SOURCE))
     || !fs.existsSync(path.join(dir, MARKER_FILE))) {
     return false;
   }

@@ -79,6 +79,7 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 ├── AGENTS.md                       ← this file (agent handoff + internals)
 ├── CLAUDE.md                       ← short pointer for Claude Code
 ├── README.md                       ← user-facing docs (project, features, quick start)
+├── docs/ARCHITECTURE.md            ← human contributor guide (architecture + per-file function index)
 ├── package.json                    ← extension manifest, deps, scripts, contrib
 ├── package-lock.json               ← npm lockfile
 ├── pnpm-workspace.yaml             ← pnpm build permissions (serialport native)
