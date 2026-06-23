@@ -16,7 +16,7 @@ describe("ensureManagedFirmware", () => {
     vi.restoreAllMocks();
   });
 
-  function createExtractedFirmwareRoot(options: { marker?: boolean; patches?: boolean; omitSubmodule?: "u8g2" | "ucg" | "snprintf" } = {}): string {
+  function createExtractedFirmwareRoot(options: { marker?: boolean; omitSubmodule?: "u8g2" | "ucg" | "snprintf" } = {}): string {
     const root = path.join(tmp, "firmware", MANAGED_FIRMWARE_TAG);
     fs.mkdirSync(root, { recursive: true });
     fs.writeFileSync(path.join(root, "CMakeLists.txt"), "# fake cmake");
@@ -41,9 +41,7 @@ describe("ensureManagedFirmware", () => {
       fs.writeFileSync(path.join(root, "app", "ucglib", "ucg", "src", "clib", "ucg.h"), "// fake ucg.h");
     }
 
-    if (options.patches) {
-      fs.writeFileSync(path.join(root, "app", "nodemcu-vscode-newlib.c"), "// fake newlib");
-    }
+
     if (options.marker) {
       fs.writeFileSync(path.join(root, ".nodemcu-vscode-managed-firmware.json"), JSON.stringify({ tag: MANAGED_FIRMWARE_TAG, url: "http://example.com" }));
     }
@@ -51,7 +49,7 @@ describe("ensureManagedFirmware", () => {
   }
 
   it("does not redownload or re-extract if firmware is already valid", async () => {
-    const root = createExtractedFirmwareRoot({ marker: true, patches: true });
+    const root = createExtractedFirmwareRoot({ marker: true });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const returnedPath = await ensureManagedFirmware({ storageRoot: tmp });
@@ -69,11 +67,10 @@ describe("ensureManagedFirmware", () => {
     expect(returnedPath).toBe(root);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(root, ".nodemcu-vscode-managed-firmware.json"))).toBe(true);
-    expect(fs.readFileSync(path.join(root, "app", "CMakeLists.txt"), "utf-8")).toContain("nodemcu-vscode-newlib.c");
   });
 
   it("triggers redownload if u8g2 submodule is missing", async () => {
-    createExtractedFirmwareRoot({ marker: true, patches: true, omitSubmodule: "u8g2" });
+    createExtractedFirmwareRoot({ marker: true, omitSubmodule: "u8g2" });
 
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
       throw new Error("Triggered download");
@@ -84,7 +81,7 @@ describe("ensureManagedFirmware", () => {
   });
 
   it("triggers redownload if ucg submodule is missing", async () => {
-    createExtractedFirmwareRoot({ marker: true, patches: true, omitSubmodule: "ucg" });
+    createExtractedFirmwareRoot({ marker: true, omitSubmodule: "ucg" });
 
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
       throw new Error("Triggered download");

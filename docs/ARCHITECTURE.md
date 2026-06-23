@@ -149,11 +149,7 @@ regenerates the header → next build reconfigures.
 
 ### 4.1 Managed firmware (`firmware/managedFirmware.ts`)
 `ensureManagedFirmware()` downloads `MANAGED_FIRMWARE_URL` (tag `MANAGED_FIRMWARE_TAG`,
-currently `v3.1.1`), extracts it, hydrates three submodules, applies two
-compatibility patches (`nodemcu-vscode-newlib.c`, `nodemcu-vscode-luac-assert.c`),
-patches the root `CMakeLists.txt` to forward `-DLUA` / `-DLUA_NUMBER_INTEGRAL` /
-`-DLUA_NUMBER_64BITS` into the firmware ExternalProject (so firmware and
-`luac.cross` share the same Lua flavour), and writes a
+currently `v3.1.1`), extracts it, hydrates three submodules, and writes a
 `.nodemcu-vscode-managed-firmware.json` marker so it isn't redone.
 
 ### 4.2 LFS & Lua flavour (`firmware/prebuiltLuacCross.ts`)

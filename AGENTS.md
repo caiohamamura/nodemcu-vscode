@@ -221,7 +221,7 @@ Extension Development Host (see §9).
 | `src/build/outputParser.ts` | `parseProblems`, `summarize`, `extractModuleBuildSummary` | Pure regex; no vscode dependency. |
 | `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
-| `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, applies two compatibility patches (`app/nodemcu-vscode-newlib.c`, `tools/luac_cross/nodemcu-vscode-luac-assert.c`), patches root `CMakeLists.txt` to forward `-DLUA`/`-DLUA_NUMBER_INTEGRAL`/`-DLUA_NUMBER_64BITS` to the firmware ExternalProject (so firmware + luac.cross share the Lua flavour — §5.5), writes `.nodemcu-vscode-managed-firmware.json` marker. |
+| `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, writes `.nodemcu-vscode-managed-firmware.json` marker. |
 | `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target. `DEFAULT_PREBUILT_RELEASE` carries two independent tags: `releaseTag` (the GitHub release URL the assets are downloaded from, e.g. `v0.3.1`) and `firmwareTag` (the firmware fork tag embedded in the asset filename + used as the cache key, e.g. `v3.1.1`). Assets are built by `.github/workflows/luac-cross-prebuilt.yml`. See §5.5. |
 | `src/flash/flashManager.ts` | `FlashManager` | Prefers `firmware/tools/toolchains/esptool.py`; falls back to `python -m esptool`. Standard `0x00000` / `0x10000` mapping. |
 | `src/flash/serialDiscovery.ts` | `SerialDiscovery` | Tries `serialport`, then PowerShell `SerialPort::GetPortNames` on Windows, then `/dev/tty*` glob on Linux. Honors `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` env var (JSON array of strings or `{path, manufacturer, ...}`). |
@@ -408,15 +408,10 @@ fails with a download error unless a host compiler is present to build locally.
 - URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/v3.1.1.zip`
 - Tag: `mbedtls-2.28.10-beta` (constant in `src/firmware/managedFirmware.ts`).
 - Storage: `context.globalStorageUri/fsPath/firmware/<tag>/`.
-- Marker file: `.nodemcu-vscode-managed-firmware.json` (presence + validity of
-  patched files = ready).
+- Marker file: `.nodemcu-vscode-managed-firmware.json` (presence = ready).
 - Submodules hydrated: `c99-snprintf` (weiss), `u8g2` (olikraus/U8g2_Arduino),
   `ucg` (olikraus/Ucglib_Arduino).
-- Patches applied:
-  - `app/nodemcu-vscode-newlib.c` — provides `_malloc_r`, `_free_r`, `_realloc_r`.
-    Patched into `app/CMakeLists.txt` next to `dummy.c`.
-  - `tools/luac_cross/nodemcu-vscode-luac-assert.c` — provides `luaL_assertfail`.
-    Patched into `tools/luac_cross/CMakeLists.txt` after `pixbuf.c`.
+
 
 ### 5.4 Runtime interaction policies
 

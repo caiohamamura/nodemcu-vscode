@@ -15,7 +15,6 @@ const TOOLCHAIN_URL = `https://dl.espressif.com/dl/${TOOLCHAIN_TARBALL}`;
 const TOOLCHAIN_DIR = `esp8266-xtensa-lx106-elf-win32-1.22.0-88-gde0bdc1-4.8.5`;
 
 const MARKER_FILE = ".nodemcu-vscode-managed-firmware.json";
-const NEWLIB_COMPAT_SOURCE = path.join("app", "nodemcu-vscode-newlib.c");
 
 const SUBMODULES = [
   {
@@ -46,7 +45,6 @@ export async function ensureManagedFirmware(opts: EnsureManagedFirmwareOptions):
   if (isManagedFirmwareReady(root)) return root;
   if (isUsableExtractedFirmwareRoot(root)) {
     opts.onProgress?.("Finalizing managed firmware");
-    await applyCompatibilityPatches(root);
     await preExtractToolchain(root, opts.onProgress);
     await writeMarker(markerPath);
     return root;
@@ -80,7 +78,6 @@ export async function ensureManagedFirmware(opts: EnsureManagedFirmwareOptions):
     });
 
     await hydrateSubmodules(root, tempRoot, opts.onProgress);
-    await applyCompatibilityPatches(root);
     await preExtractToolchain(root, opts.onProgress);
 
     await writeMarker(markerPath);
@@ -96,18 +93,8 @@ async function writeMarker(markerPath: string): Promise<void> {
 
 function isManagedFirmwareReady(dir: string): boolean {
   if (!isUsableExtractedFirmwareRoot(dir)
-    || !fs.existsSync(path.join(dir, NEWLIB_COMPAT_SOURCE))
     || !fs.existsSync(path.join(dir, MARKER_FILE))) {
     return false;
-  }
-  // Verify the ExternalProject Lua-flag forwarding patch is present so
-  // the firmware and luac.cross share the same Lua flavour (AGENTS §5.5).
-  const rootCmake = path.join(dir, "CMakeLists.txt");
-  if (fs.existsSync(rootCmake)) {
-    try {
-      const content = fs.readFileSync(rootCmake, "utf-8");
-      if (!content.includes("-DLUA=${LUA}")) return false;
-    } catch { return false; }
   }
   return true;
 }
@@ -166,65 +153,6 @@ async function hydrateSubmodules(firmwareRoot: string, tempRoot: string, onProgr
   }
 }
 
-async function applyCompatibilityPatches(firmwareRoot: string): Promise<void> {
-  const sourcePath = path.join(firmwareRoot, NEWLIB_COMPAT_SOURCE);
-  await fsp.writeFile(sourcePath, `#include <stddef.h>
-
-struct _reent;
-
-extern void *malloc(size_t size);
-extern void free(void *ptr);
-extern void *realloc(void *ptr, size_t size);
-
-void *_malloc_r(struct _reent *reent, size_t size)
-{
-  (void)reent;
-  return malloc(size);
-}
-
-void _free_r(struct _reent *reent, void *ptr)
-{
-  (void)reent;
-  free(ptr);
-}
-
-void *_realloc_r(struct _reent *reent, void *ptr, size_t size)
-{
-  (void)reent;
-  return realloc(ptr, size);
-}
-`, "utf-8");
-
-  const cmakePath = path.join(firmwareRoot, "app", "CMakeLists.txt");
-  const cmake = await fsp.readFile(cmakePath, "utf-8");
-  const before = "add_executable(${EXECUTABLE_NAME} dummy.c)";
-  const after = "add_executable(${EXECUTABLE_NAME} dummy.c nodemcu-vscode-newlib.c)";
-  if (!cmake.includes(after)) {
-    await fsp.writeFile(cmakePath, cmake.replace(before, after), "utf-8");
-  }
-
-  const rootCmakePath = path.join(firmwareRoot, "CMakeLists.txt");
-  if (fs.existsSync(rootCmakePath)) {
-    const rootCmake = await fsp.readFile(rootCmakePath, "utf-8");
-    const epNeedle = "ExternalProject_Add(firmware";
-    const epReplacement = "ExternalProject_Add(firmware\n    BUILD_BYPRODUCTS ${CURRENT_BINARY_DIR}/app.elf";
-    if (!rootCmake.includes("BUILD_BYPRODUCTS")) {
-      await fsp.writeFile(rootCmakePath, rootCmake.replace(epNeedle, epReplacement), "utf-8");
-    }
-    // Forward -DLUA=, -DLUA_NUMBER_INTEGRAL=, -DLUA_NUMBER_64BITS= to the
-    // firmware ExternalProject so the firmware and luac.cross use the same Lua
-    // flavour. Without this luac.cross produces images the device's LFS loader
-    // rejects because the firmware defaults to lua51. See AGENTS §5.5.
-    let patchedCmake = await fsp.readFile(rootCmakePath, "utf-8");
-    if (!patchedCmake.includes("-DLUA=${LUA}")) {
-      patchedCmake = patchedCmake.replace(
-        "CMAKE_ARGS",
-        "CMAKE_ARGS\n        -DLUA=${LUA}\n        -DLUA_NUMBER_INTEGRAL=${LUA_NUMBER_INTEGRAL}\n        -DLUA_NUMBER_64BITS=${LUA_NUMBER_64BITS}",
-      );
-      await fsp.writeFile(rootCmakePath, patchedCmake, "utf-8");
-    }
-  }
-}
 
 async function findSingleDirectory(root: string): Promise<string | null> {
   const entries = await fsp.readdir(root, { withFileTypes: true });
