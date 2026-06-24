@@ -222,7 +222,7 @@ Extension Development Host (see §9).
 | `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
 | `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, writes `.nodemcu-vscode-managed-firmware.json` marker. |
-| `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target. `DEFAULT_PREBUILT_RELEASE` carries two independent tags: `releaseTag` (the GitHub release URL the assets are downloaded from, e.g. `v0.3.1`) and `firmwareTag` (the firmware fork tag embedded in the asset filename + used as the cache key, e.g. `v3.1.1`). Assets are built by `.github/workflows/luac-cross-prebuilt.yml`. See §5.5. |
+| `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target. `DEFAULT_PREBUILT_RELEASE` carries two independent tags: `releaseTag` (the GitHub release URL the assets are downloaded from, e.g. `v0.3.1`) and `firmwareTag` (the firmware fork tag embedded in the asset filename + used as the cache key, e.g. `v3.1.1`). Assets are built by the firmware repo's `luac-cross-release.yml` (not this repo). See §5.5. |
 | `src/flash/flashManager.ts` | `FlashManager` | Prefers `firmware/tools/toolchains/esptool.py`; falls back to `python -m esptool`. Standard `0x00000` / `0x10000` mapping. |
 | `src/flash/serialDiscovery.ts` | `SerialDiscovery` | Tries `serialport`, then PowerShell `SerialPort::GetPortNames` on Windows, then `/dev/tty*` glob on Linux. Honors `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` env var (JSON array of strings or `{path, manufacturer, ...}`). |
 | `src/luaApi/apiFiles.ts` | `generateLuaApiFile`, `generateLuaRc`, `writeLuaRc` | Hardcoded `KNOWN_GLOBALS` descriptions for ~30 modules; emits `---@meta` + `---@class NodeMCUModule` annotations. |
@@ -327,8 +327,11 @@ one of two ways:
    pipeline is unchanged. Cached at
    `<globalStorageUri>/luac-cross/<tag>/<flavour>/<platform>-<arch>/`.
 2. **Build from source** (fallback): when a host C compiler (`cc`/`gcc`) is
-   present, `BuildManager` compiles `luac.cross` from the firmware source with
-   `-DBUILD_HOST_TOOLS=ON`. The host tools are pre-built with a **host-clean PATH**
+   present, `BuildManager` compiles `luac.cross` from the firmware source. The
+   LFS configure passes `-DBUILD_HOST_TOOLS=AUTO` (not `ON`), so the host tools
+   build when a compiler is found and are **silently skipped** when it isn't —
+   the prebuilt download (1) covers the no-compiler case instead of failing the
+   firmware configure. The host tools are pre-built with a **host-clean PATH**
    before the firmware build — otherwise the host gcc grabs the xtensa `as` off
    PATH and dies with `as: unrecognized option '--64'`.
 
@@ -338,17 +341,17 @@ compiler is required because the prebuilt binary is the default.
 
 `deployLfsImage()` prefers the firmware-build binary; if absent, resolves the
 pre-built one on demand (first LFS use), then falls back to an error message if
-both sources fail. **For the pre-built binaries to exist, the
-`.github/workflows/luac-cross-prebuilt.yml` workflow must run** — it builds
-`luac.cross` for each flavour × platform/arch (host-tool stage only) and attaches
-the archives to the current firmware release (e.g. `v3.1.1`) in
-`caiohamamura/nodemcu-firmware`. It runs **automatically on every `v*` tag push**
-(alongside `ci.yml`) and can also be dispatched manually (inputs `firmwareTag` +
-`releaseTag`). The firmware tag (`FW_TAG`, the firmware fork zip it builds —
-falls back to `v3.1.1` on a tag push) and the release tag (where it
-attaches, `github.ref_name` on a tag push) are the same; the release tag must
-match `DEFAULT_PREBUILT_RELEASE.releaseTag`. Until those assets exist, LFS deploy
-fails with a download error unless a host compiler is present to build locally.
+both sources fail. **The pre-built binaries are produced and published by the
+firmware repo, not this extension** — `caiohamamura/nodemcu-firmware`'s
+`.github/workflows/luac-cross-release.yml` builds `luac.cross` for each
+flavour × platform/arch (host-tool stage only) and attaches the archives to the
+release named by its tag. It runs on every `v*` tag push to that repo and can be
+dispatched manually (input `release_tag`). The asset name + archive member must
+match `prebuiltLuacCross.ts` (`luac-cross-<TAG>-<flavour>-<platform>-<arch>.<ext>`,
+member `luac.cross`/`luac.cross.int`), and the tag must equal
+`MANAGED_FIRMWARE_TAG` (= `DEFAULT_PREBUILT_RELEASE.releaseTag`). Until those
+assets exist, LFS deploy fails with a download error unless a host compiler is
+present to build locally.
 
 - **Config**: `[build] lfs_size` (hex like `0x20000` or decimal; `0` = off,
   default off). `DEFAULT_LFS_SIZE = 0x20000` (128 KB) is written by **Enable LFS**.
@@ -356,7 +359,9 @@ fails with a download error unless a host compiler is present to build locally.
 - **Build side** (`buildManager` + `userModulesWriter.setUserConfigLfs`): a nonzero
   `lfs_size` writes `LUA_FLASH_STORE` into `user_config.h` (a partition change →
   forces reconfigure + reflash, like the SSL toggle). `cmakeConfigureCommand`
-  passes `-DBUILD_HOST_TOOLS=ON` only when LFS is on.
+  passes `-DBUILD_HOST_TOOLS=AUTO` when LFS is on (else `OFF`) — `AUTO` builds
+  luac.cross locally if a host compiler exists and skips it otherwise, leaving
+  the prebuilt download to supply the binary on compiler-less machines.
 - **Image** (`build/lfsBuilder.ts`): `luac.cross -f -m <size> -o lfs.img <files>`
   over the enabled local `[lua_modules]` + `src/*.lua` (init.lua stays the SPIFFS
   bootstrap). Path helpers `luacCrossPath` / `lfsImagePath` in `util/paths.ts`.
@@ -489,9 +494,11 @@ The CI workflow (`.github/workflows/ci.yml`) handles build + publish:
   `npx ovsx publish` step) — ship the VSIX from the GitHub release manually until
   it's re-enabled.
 
-The prebuilt `luac.cross` workflow (`luac-cross-prebuilt.yml`) **also triggers on
-the same `v*` tag push** (§5.5), so a release builds + attaches its prebuilt
-binaries alongside the VSIX automatically — no separate manual dispatch.
+The prebuilt `luac.cross` archives are **built and published by the firmware repo**
+(`caiohamamura/nodemcu-firmware` → `luac-cross-release.yml`), keyed by the firmware
+tag (`MANAGED_FIRMWARE_TAG`), **not** by this extension's release. They only need
+re-publishing when the firmware tag changes — a routine extension release that
+keeps the same `MANAGED_FIRMWARE_TAG` reuses the existing assets.
 
 To cut a new release:
 
@@ -500,15 +507,14 @@ To cut a new release:
 2. Update `CHANGELOG.md` — `generate_release_notes: true` produces a
    commit-by-commit summary at the bottom, but the hand-curated section is
    what users see in the marketplace / README.
-3. If the new release should also host prebuilt `luac.cross` assets (almost
-   always yes — see §5.5): bump
-   `src/firmware/prebuiltLuacCross.ts:DEFAULT_PREBUILT_RELEASE.releaseTag` to the
-   new release tag (the workflow's `tag_name` now resolves from `github.ref_name`
-   automatically). Only touch `FW_TAG`/`MANAGED_FIRMWARE_TAG` if the firmware
-   fork tag itself changed.
+3. Prebuilt `luac.cross` assets are keyed by `MANAGED_FIRMWARE_TAG`, published
+   from the firmware repo (`luac-cross-release.yml`). Only when the firmware fork
+   tag changes: bump `MANAGED_FIRMWARE_TAG` here (and
+   `DEFAULT_PREBUILT_RELEASE`), then tag-push the firmware repo so its
+   `luac-cross-release.yml` rebuilds + attaches the matching archives. A normal
+   extension release that keeps the same firmware tag needs no asset rebuild.
 4. Commit + push the version bump, then `git tag v<version> && git push origin
-   v<version>`. The `publish` job creates the GitHub release + VSIX, and the
-   prebuilt workflow attaches the `luac.cross` archives to the same release.
+   v<version>`. The `publish` job creates the GitHub release + VSIX.
 
 **Gotcha:** `vsce` refuses to republish a version that already exists. To
 re-release the same VSIX you must bump the version (e.g. v0.3.0 → v0.3.1).

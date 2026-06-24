@@ -160,8 +160,9 @@ currently `v3.1.1`), extracts it, hydrates three submodules, and writes a
   the cache key (e.g. `v3.1.1`).
 
 `resolvePrebuiltLuacCross()` downloads + verifies the right binary for the flavour
-and host (`currentPrebuiltTarget()`). Prebuilt assets are produced by
-`.github/workflows/luac-cross-prebuilt.yml`.
+and host (`currentPrebuiltTarget()`). Prebuilt assets are produced by the firmware
+repo's `luac-cross-release.yml` (`caiohamamura/nodemcu-firmware`), not by this
+extension.
 
 ### 4.3 Serial device protocol (`device/serialDeviceClient.ts`)
 `SerialDeviceClient` is the **active** path for upload/download/list/remove/run/format.

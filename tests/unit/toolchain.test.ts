@@ -53,6 +53,53 @@ describe("cmakeConfigureCommand", () => {
     expect(cmd.command).toBe("/managed/cmake");
   });
 
+  it("defaults BUILD_HOST_TOOLS to OFF (normal firmware build, no host tools)", () => {
+    const cmd = cmakeConfigureCommand({
+      firmwarePath: "/fw",
+      buildDir: "/fw/build",
+      generator: "Ninja",
+      luaVersion: "53",
+      luaNumberIntegral: false,
+      luaNumber64bits: false,
+      verbose: false,
+    });
+    expect(cmd.args).toContain("-DBUILD_HOST_TOOLS=OFF");
+  });
+
+  it("passes BUILD_HOST_TOOLS=AUTO for LFS so a missing host compiler is not fatal", () => {
+    // AUTO (not ON) is the fix: the firmware configure must succeed without a
+    // host C compiler — luac.cross is supplied by the prebuilt download — so it
+    // must never emit ON, which the firmware treats as a hard requirement.
+    const cmd = cmakeConfigureCommand({
+      firmwarePath: "/fw",
+      buildDir: "/fw/build",
+      generator: "Ninja",
+      luaVersion: "53",
+      luaNumberIntegral: false,
+      luaNumber64bits: false,
+      verbose: false,
+      buildHostTools: "AUTO",
+    });
+    expect(cmd.args).toContain("-DBUILD_HOST_TOOLS=AUTO");
+    expect(cmd.args).not.toContain("-DBUILD_HOST_TOOLS=ON");
+  });
+
+  it("emits the explicit BUILD_HOST_TOOLS mode verbatim", () => {
+    for (const mode of ["AUTO", "ON", "OFF"] as const) {
+      const cmd = cmakeConfigureCommand({
+        firmwarePath: "/fw",
+        buildDir: "/fw/build",
+        generator: "Ninja",
+        luaVersion: "53",
+        luaNumberIntegral: false,
+        luaNumber64bits: false,
+        verbose: false,
+        buildHostTools: mode,
+      });
+      expect(cmd.args).toContain(`-DBUILD_HOST_TOOLS=${mode}`);
+    }
+  });
+
   it("includes LUA_NUMBER_INTEGRAL when set", () => {
     const cmd = cmakeConfigureCommand({
       firmwarePath: "/fw",

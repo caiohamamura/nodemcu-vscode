@@ -2,6 +2,22 @@
 
 All notable changes to the NodeMCU VSCode extension are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Enabling LFS no longer requires a host C compiler.** The firmware configure
+  for LFS passed `-DBUILD_HOST_TOOLS=ON`, which the firmware treats as a hard
+  requirement and aborts with `BUILD_HOST_TOOLS=ON requires a host C compiler`.
+  It now passes `AUTO`: host tools build locally when a compiler is present and
+  are skipped otherwise, with `luac.cross` supplied by the prebuilt download.
+
+### Changed
+- **Prebuilt `luac.cross` publishing moved to the firmware repo.** The
+  `luac-cross-prebuilt.yml` workflow was removed from this extension; the
+  binaries are now built and released by `caiohamamura/nodemcu-firmware`'s
+  `luac-cross-release.yml`, keyed by `MANAGED_FIRMWARE_TAG`. Asset names/format
+  are unchanged (`prebuiltLuacCross.ts` is the contract).
+
 ## [0.3.3] - 2026-06-22
 
 ### Fixed

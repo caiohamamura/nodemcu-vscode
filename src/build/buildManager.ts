@@ -162,7 +162,10 @@ export class BuildManager {
         luaNumberIntegral: ctx.config.nodemcu.lua_number_integral,
         luaNumber64bits: ctx.config.nodemcu.lua_number_64bits,
         verbose: ctx.verbose,
-        buildHostTools: ctx.config.build.lfs_size > 0,
+        // LFS needs luac.cross. Use AUTO (not ON) so a machine without a host C
+        // compiler still configures + flashes the LFS-partitioned firmware; the
+        // luac.cross then comes from the prebuilt download in deployLfsImage.
+        buildHostTools: ctx.config.build.lfs_size > 0 ? "AUTO" : "OFF",
       });
       let configureResult = await this.shell.run(configureCmd.command, configureCmd.args, {
         cwd: configureCmd.cwd,

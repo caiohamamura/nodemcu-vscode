@@ -90,18 +90,31 @@ export function cmakeConfigureCommand(opts: {
   luaNumberIntegral: boolean;
   luaNumber64bits: boolean;
   verbose: boolean;
-  /** Build the optional host tools (luac.cross, spiffsimg). Needed for LFS. */
-  buildHostTools?: boolean;
+  /**
+   * Host-tool build mode (luac.cross, spiffsimg), passed straight to the
+   * firmware's `-DBUILD_HOST_TOOLS`:
+   *   - "OFF"  : never build them (normal firmware build).
+   *   - "AUTO" : build them only if a host C compiler is found at configure
+   *              time, otherwise skip silently. Used for LFS — luac.cross is
+   *              otherwise fetched as a prebuilt binary, so a missing host
+   *              compiler must not fail the firmware configure.
+   *   - "ON"   : require a host compiler (fatal if absent). Not used by the
+   *              extension; kept for completeness.
+   * Defaults to "OFF".
+   */
+  buildHostTools?: "AUTO" | "ON" | "OFF";
 }): CommandSpec {
   const args: string[] = [
     "-S", opts.firmwarePath,
     "-B", opts.buildDir,
     "-G", opts.generator,
     `-DLUA=${opts.luaVersion}`,
-    // Only build the host tools when LFS needs luac.cross. Building them as part
-    // of a normal firmware build risks the host compiler picking up the xtensa
-    // assembler from PATH ("as: unrecognized option '--64'").
-    `-DBUILD_HOST_TOOLS=${opts.buildHostTools ? "ON" : "OFF"}`,
+    // LFS passes "AUTO" so the host tools build locally when a compiler exists
+    // but are skipped (not fatal) when it doesn't — the prebuilt luac.cross
+    // download covers that case. Normal builds pass "OFF": building host tools
+    // then risks the host compiler grabbing the xtensa assembler from PATH
+    // ("as: unrecognized option '--64'").
+    `-DBUILD_HOST_TOOLS=${opts.buildHostTools ?? "OFF"}`,
   ];
   if (opts.generator === "Ninja" && opts.ninja) {
     args.push(`-DCMAKE_MAKE_PROGRAM=${opts.ninja}`);
