@@ -2185,13 +2185,81 @@ function buildProjectTasksProvider(): AsyncTreeProvider {
   return new AsyncTreeProvider(async () => []);
 }
 
+// Matches when the cursor sits inside the quotes of a `require("…` call.
+const REQUIRE_QUOTE_RE = /\brequire\s*\(\s*["'][^"']*$/;
+
 class LuaModuleCompletionProvider implements vscode.CompletionItemProvider {
-  async provideCompletionItems(): Promise<vscode.CompletionItem[]> {
+  async provideCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+  ): Promise<vscode.CompletionItem[]> {
+    // Inside require("…") the bare-name completions (RequireCompletionProvider)
+    // apply; the top-level `name = require("name")` snippet would be malformed here.
+    const prefix = document.lineAt(position).text.slice(0, position.character);
+    if (REQUIRE_QUOTE_RE.test(prefix)) return [];
     const fw = await getFirmwarePath();
     if (!fw) return [];
     const cfg = getConfigOrNull();
     const modules = await listLuaModulesFromFirmware(fw);
     return modules.map((m) => createLuaModuleCompletionItem(m, cfg?.nodemcu));
+  }
+}
+
+/** Bare module names of local `*.lua` files under the configured src/ dir. */
+function localSrcLuaModuleNames(): string[] {
+  const root = getWorkspaceRoot();
+  if (!root) return [];
+  const cfg = getConfigOrNull();
+  const srcDir = path.join(root, cfg?.nodemcu.src || "src");
+  const names = new Set<string>();
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile() && e.name.toLowerCase().endsWith(".lua")) {
+        names.add(e.name.replace(/\.lua$/i, ""));
+      }
+    }
+  };
+  walk(srcDir);
+  return Array.from(names).sort();
+}
+
+/**
+ * Completes the module name inside `require("…")` from the firmware Lua module
+ * library plus the local `*.lua` files under src/. Inserts the bare name only.
+ */
+class RequireCompletionProvider implements vscode.CompletionItemProvider {
+  async provideCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+  ): Promise<vscode.CompletionItem[] | undefined> {
+    const prefix = document.lineAt(position).text.slice(0, position.character);
+    if (!REQUIRE_QUOTE_RE.test(prefix)) return undefined;
+    const seen = new Set<string>();
+    const items: vscode.CompletionItem[] = [];
+    const add = (name: string, detail: string, sort: string) => {
+      if (seen.has(name)) return;
+      seen.add(name);
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Module);
+      item.detail = detail;
+      item.insertText = name;
+      item.filterText = name;
+      item.sortText = `${sort}_${name}`;
+      items.push(item);
+    };
+    for (const name of localSrcLuaModuleNames()) add(name, "local module (src/)", "0");
+    const fw = await getFirmwarePath();
+    if (fw) {
+      for (const m of await listLuaModulesFromFirmware(fw)) add(m.name, "firmware Lua module", "1");
+    }
+    return items;
   }
 }
 
@@ -2494,6 +2562,11 @@ export function activate(context: vscode.ExtensionContext): void {
       { language: "lua" },
       new FontCompletionProvider(),
       ".", ..."_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".split("")
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      { language: "lua" },
+      new RequireCompletionProvider(),
+      "\"", "'", ..."_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".split("")
     ),
     vscode.languages.registerCodeActionsProvider(
       { language: "lua" },

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as vscode from "vscode";
-import type { NodemcuConfig } from "../config/nodemcuIni";
+import { isLfsEnabled, type NodemcuConfig } from "../config/nodemcuIni";
 import { KNOWN_MODULES, MANDATORY_C_MODULES } from "../build/userModulesWriter";
 import { listU8g2Fonts, listUcgFonts } from "../firmware/graphicsCatalog";
 import { activeU8g2Fonts, activeUcgFonts } from "../build/graphicsConfigWriter";
@@ -124,6 +124,7 @@ export class LuaDiagnosticsController {
       return keys.size > 0 ? keys : active;
     };
     return {
+      lfsEnabled: isLfsEnabled(config),
       enabledCModules,
       knownCModules: KNOWN_MODULES,
       mandatoryCModules: MANDATORY_C_MODULES,
@@ -156,11 +157,11 @@ export class LuaDiagnosticsController {
 
 function toVsDiagnostic(d: LuaDiagnostic): vscode.Diagnostic {
   const range = new vscode.Range(d.line, d.startCol, d.line, d.endCol);
-  const diag = new vscode.Diagnostic(
-    range,
-    d.message,
-    d.severity === "warning" ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
-  );
+  const severity =
+    d.severity === "error" ? vscode.DiagnosticSeverity.Error
+    : d.severity === "warning" ? vscode.DiagnosticSeverity.Warning
+    : vscode.DiagnosticSeverity.Information;
+  const diag = new vscode.Diagnostic(range, d.message, severity);
   diag.source = "NodeMCU";
   diag.code = d.code;
   return diag;

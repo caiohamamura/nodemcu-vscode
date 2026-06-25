@@ -3,6 +3,7 @@ import { computeLuaDiagnostics, type LuaDiagnosticsContext } from "../../src/lua
 
 function ctx(overrides: Partial<LuaDiagnosticsContext> = {}): LuaDiagnosticsContext {
   return {
+    lfsEnabled: false,
     enabledCModules: new Set(["file", "gpio", "net", "node", "tmr", "uart", "wifi"]),
     knownCModules: new Set(["dht", "mqtt", "u8g2", "ucg", "gpio", "file"]),
     mandatoryCModules: new Set(["file", "gpio", "net", "node", "tmr", "uart", "wifi"]),
@@ -63,5 +64,27 @@ describe("computeLuaDiagnostics", () => {
   it("reports each disabled module only once", () => {
     const src = "dht.read(1)\ndht.read(2)\ndht.read(3)\n";
     expect(computeLuaDiagnostics(src, ctx())).toHaveLength(1);
+  });
+
+  describe("with LFS enabled", () => {
+    it("errors on require() of a known module and suggests node.LFS.get", () => {
+      const d = computeLuaDiagnostics('local f = require("fifo")\n', ctx({ lfsEnabled: true }));
+      expect(d).toHaveLength(1);
+      expect(d[0].severity).toBe("error");
+      expect(d[0].code).toBe("nodemcu.lfsRequire:fifo");
+      // range spans the whole require("fifo") call so the fix can replace it
+      expect(d[0].startCol).toBe('local f = '.length);
+      expect(d[0].endCol).toBe('local f = require("fifo")'.length);
+    });
+
+    it("errors on every literal require(), even unknown modules", () => {
+      const d = computeLuaDiagnostics('require("fifo")\nrequire("weird_thing")\n', ctx({ lfsEnabled: true }));
+      expect(d.map((x) => x.code)).toEqual(["nodemcu.lfsRequire:fifo", "nodemcu.lfsRequire:weird_thing"]);
+    });
+
+    it("does not emit the lua_modules enable warning when LFS is on", () => {
+      const d = computeLuaDiagnostics('require("ds18b20")\n', ctx({ lfsEnabled: true }));
+      expect(d.every((x) => x.code.startsWith("nodemcu.lfsRequire"))).toBe(true);
+    });
   });
 });

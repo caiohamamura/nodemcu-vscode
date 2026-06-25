@@ -2,6 +2,18 @@
 
 All notable changes to the NodeMCU VSCode extension are documented here.
 
+## [0.4.1] - 2026-06-25
+
+### Added
+- **LFS-aware `require()`.** When LFS is enabled (`[build] lfs_size > 0`), every
+  literal `require("…")` in a Lua file is flagged as an error and the quick-fix
+  rewrites it to `node.LFS.get("…")()` (an in-document edit). With LFS off, the
+  prior "enable in `[lua_modules]`" warning is unchanged.
+- **Completion inside `require("…")`.** Typing a module name inside the quotes of
+  a `require()` call now completes from the firmware Lua module library plus the
+  local `*.lua` files under the configured `src/` directory (local files first).
+  The top-level `name = require("name")` snippet no longer fires inside the quotes.
+
 ## [0.4.0] - 2026-06-25
 
 ### Added

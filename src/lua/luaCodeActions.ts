@@ -10,7 +10,7 @@ export class NodemcuLuaCodeActionProvider implements vscode.CodeActionProvider {
   static readonly providedKinds = [vscode.CodeActionKind.QuickFix];
 
   provideCodeActions(
-    _doc: vscode.TextDocument,
+    doc: vscode.TextDocument,
     _range: vscode.Range | vscode.Selection,
     context: vscode.CodeActionContext,
   ): vscode.CodeAction[] {
@@ -21,6 +21,18 @@ export class NodemcuLuaCodeActionProvider implements vscode.CodeActionProvider {
       if (sep === -1) continue;
       const kind = code.slice(0, sep);
       const name = code.slice(sep + 1);
+
+      // LFS require → in-document text edit (not a nodemcu.ini change).
+      if (kind === "nodemcu.lfsRequire") {
+        const title = `Replace require with node.LFS.get("${name}")()`;
+        const action = new vscode.CodeAction(title, vscode.CodeActionKind.QuickFix);
+        action.diagnostics = [diag];
+        action.edit = new vscode.WorkspaceEdit();
+        action.edit.replace(doc.uri, diag.range, `node.LFS.get("${name}")()`);
+        actions.push(action);
+        continue;
+      }
+
       const spec = FIX_SPECS[kind];
       if (!spec) continue;
       const action = new vscode.CodeAction(spec.title(name), vscode.CodeActionKind.QuickFix);

@@ -14,6 +14,7 @@
 export type DiagnosticActionKind =
   | "nodemcu.cModule"
   | "nodemcu.luaModule"
+  | "nodemcu.lfsRequire"
   | "nodemcu.u8g2Font"
   | "nodemcu.ucgFont"
   | "nodemcu.unknownFont";
@@ -23,12 +24,14 @@ export interface LuaDiagnostic {
   startCol: number;
   endCol: number;
   message: string;
-  severity: "warning" | "info";
+  severity: "error" | "warning" | "info";
   /** `<actionKind>:<name>` for fixable diagnostics, or a bare kind otherwise. */
   code: string;
 }
 
 export interface LuaDiagnosticsContext {
+  /** LFS on → require() is an error; load modules via node.LFS.get(...)() instead. */
+  lfsEnabled: boolean;
   enabledCModules: Set<string>;
   knownCModules: Set<string>;
   mandatoryCModules: Set<string>;
@@ -49,6 +52,9 @@ function stripLineComment(line: string): string {
 }
 
 const REQUIRE_RE = /\brequire\s*\(\s*["']([\w.\-]+)["']/g;
+// Full `require("name")` call (incl. closing paren) so the LFS fix can replace
+// the whole expression with node.LFS.get("name")().
+const LFS_REQUIRE_RE = /\brequire\s*\(\s*["']([\w.\-]+)["']\s*\)/g;
 const CMODULE_RE = /(^|[^.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\./g;
 const FONT_RE = /\b(u8g2|ucg)\.(font_[A-Za-z0-9_]+)/g;
 
@@ -64,18 +70,32 @@ export function computeLuaDiagnostics(text: string, ctx: LuaDiagnosticsContext):
 
     let m: RegExpExecArray | null;
 
-    REQUIRE_RE.lastIndex = 0;
-    while ((m = REQUIRE_RE.exec(code)) !== null) {
-      const name = m[1];
-      if (!ctx.availableLuaModules.has(name) || ctx.enabledLuaModules.has(name)) continue;
-      if (reportedLuaModule.has(name)) continue;
-      reportedLuaModule.add(name);
-      const start = m.index + m[0].indexOf(name);
-      out.push({
-        line, startCol: start, endCol: start + name.length,
-        message: `Lua module "${name}" is required but not enabled in nodemcu.ini [lua_modules].`,
-        severity: "warning", code: `nodemcu.luaModule:${name}`,
-      });
+    if (ctx.lfsEnabled) {
+      // With LFS on, require() can't see flash-stored modules — flag every literal
+      // require() as an error; the quick-fix swaps it for node.LFS.get("name")().
+      LFS_REQUIRE_RE.lastIndex = 0;
+      while ((m = LFS_REQUIRE_RE.exec(code)) !== null) {
+        const name = m[1];
+        out.push({
+          line, startCol: m.index, endCol: m.index + m[0].length,
+          message: `LFS is enabled — load "${name}" with node.LFS.get("${name}")() instead of require().`,
+          severity: "error", code: `nodemcu.lfsRequire:${name}`,
+        });
+      }
+    } else {
+      REQUIRE_RE.lastIndex = 0;
+      while ((m = REQUIRE_RE.exec(code)) !== null) {
+        const name = m[1];
+        if (!ctx.availableLuaModules.has(name) || ctx.enabledLuaModules.has(name)) continue;
+        if (reportedLuaModule.has(name)) continue;
+        reportedLuaModule.add(name);
+        const start = m.index + m[0].indexOf(name);
+        out.push({
+          line, startCol: start, endCol: start + name.length,
+          message: `Lua module "${name}" is required but not enabled in nodemcu.ini [lua_modules].`,
+          severity: "warning", code: `nodemcu.luaModule:${name}`,
+        });
+      }
     }
 
     FONT_RE.lastIndex = 0;

@@ -149,7 +149,7 @@ and runs the pure `computeLuaDiagnostics` (`lua/luaDiagnostics.ts`) against the
 current config + firmware catalog, flagging: C-module globals not enabled in
 `[c_modules]`, `require()`d Lua modules missing from `[lua_modules]`, and
 `u8g2.font_*` / `ucg.font_*` references not compiled into the image. The
-`NodemcuLuaCodeActionProvider` offers a quick-fix per diagnostic; accepting runs
+`NodemcuLuaCodeActionProvider` offers a quick-fix per diagnostic; most accept-run
 `enableCModuleFromFix` / `enableLuaModuleFromFix` / `enable{U8g2,Ucg}FontFromFix`,
 which edit `nodemcu.ini` (font fixes seed the firmware-default fonts first, so a
 single addition never drops defaults, and also enable the `u8g2`/`ucg` C module).
@@ -157,6 +157,15 @@ single addition never drops defaults, and also enable the `u8g2`/`ucg` C module)
 sorting already-compiled fonts first and enabling the picked one on accept. The
 catalog (`firmware/graphicsCatalog.ts`) and active-table parsing/regeneration
 (`build/graphicsConfigWriter.ts`) feed both paths.
+
+When **LFS is enabled** (`build.lfs_size > 0`), the require rule flips: every
+literal `require("…")` is flagged as an **error**, and the quick-fix is an
+in-document text edit (a `WorkspaceEdit`, not an ini change) that replaces the
+call with `node.LFS.get("…")()`. `RequireCompletionProvider` completes the module
+name inside `require("…")` quotes from the firmware Lua library **plus** the local
+`*.lua` files under the configured `src/` dir (`localSrcLuaModuleNames`); the
+top-level `LuaModuleCompletionProvider` suppresses its `name = require("name")`
+snippet inside those quotes so the two don't collide.
 
 ### 3.10 Compile u8g2 / ucg fonts & display drivers
 The `[u8g2_fonts]` / `[u8g2_displays]` / `[ucg_fonts]` / `[ucg_displays]` sections
@@ -389,9 +398,9 @@ carry the enable-on-accept command. `FontLib` (type).
 
 | File | Symbol | What it does |
 | --- | --- | --- |
-| `luaDiagnostics.ts` | `computeLuaDiagnostics(text, ctx)`, `LuaDiagnostic`/`LuaDiagnosticsContext`/`DiagnosticActionKind` | Pure (no vscode) scan for disabled C/Lua modules + uncompiled/unknown fonts; each fixable diagnostic carries a `<actionKind>:<name>` code. |
-| `luaDiagnosticsController.ts` | `LuaDiagnosticsController` (cls) | Owns the `nodemcu` diagnostic collection; debounces doc changes, caches the per-firmware catalog (fonts + lua modules + active header fonts), maps descriptors → `vscode.Diagnostic`. Empty font section → active header fonts count as enabled. |
-| `luaCodeActions.ts` | `NodemcuLuaCodeActionProvider` (cls) | Turns each fixable diagnostic into a quick-fix `CodeAction` bound to a `nodemcu-vscode.*FromFix` command. |
+| `luaDiagnostics.ts` | `computeLuaDiagnostics(text, ctx)`, `LuaDiagnostic`/`LuaDiagnosticsContext`/`DiagnosticActionKind` | Pure (no vscode) scan for disabled C/Lua modules + uncompiled/unknown fonts; each fixable diagnostic carries a `<actionKind>:<name>` code. With `ctx.lfsEnabled`, every literal `require()` becomes an **error** (`nodemcu.lfsRequire:<name>`) instead of the lua_modules warning. |
+| `luaDiagnosticsController.ts` | `LuaDiagnosticsController` (cls) | Owns the `nodemcu` diagnostic collection; debounces doc changes, caches the per-firmware catalog (fonts + lua modules + active header fonts), maps descriptors → `vscode.Diagnostic`. Empty font section → active header fonts count as enabled; `lfsEnabled` from `isLfsEnabled(config)`. |
+| `luaCodeActions.ts` | `NodemcuLuaCodeActionProvider` (cls) | Turns each fixable diagnostic into a quick-fix: `nodemcu.lfsRequire` → an in-document `WorkspaceEdit` (`require(...)` → `node.LFS.get(...)()`); the rest → a `nodemcu-vscode.*FromFix` command. |
 
 ### 5.9 `src/util/`, `src/tools/`, `src/python/`, `src/status/`
 

@@ -290,7 +290,11 @@ Extension Development Host (see §9).
   disabled C/Lua modules and uncompiled/unknown `u8g2.font_*` / `ucg.font_*`
   references, with quick-fixes (`NodemcuLuaCodeActionProvider`) that edit
   `nodemcu.ini`; `FontCompletionProvider` completes fonts and enables the picked
-  one on accept. See `src/lua/` + `src/build/graphicsConfigWriter.ts`.
+  one on accept. When LFS is enabled, every literal `require("…")` is flagged as
+  an **error** whose quick-fix rewrites it to `node.LFS.get("…")()` (an in-doc
+  `WorkspaceEdit`). `RequireCompletionProvider` completes the name inside
+  `require("…")` from the firmware Lua library + local `src/*.lua` files. See
+  `src/lua/` + `src/build/graphicsConfigWriter.ts`.
 
 ### 5.2 `nodemcu.ini` sections
 
