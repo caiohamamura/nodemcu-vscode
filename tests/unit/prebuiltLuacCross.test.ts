@@ -42,14 +42,26 @@ describe("luacFlavour", () => {
 });
 
 describe("luacFlavourInfo", () => {
-  it("lua51 binary is luac.cross", () => {
-    expect(luacFlavourInfo("lua51").binaryName).toBe("luac.cross");
+  it("lua51 binary is luac.cross on POSIX", () => {
+    expect(luacFlavourInfo("lua51", { platform: "linux", arch: "x64" }).binaryName).toBe("luac.cross");
   });
-  it("lua51-int binary is luac.cross.int", () => {
-    expect(luacFlavourInfo("lua51-int").binaryName).toBe("luac.cross.int");
+  it("lua51-int binary is luac.cross.int on POSIX", () => {
+    expect(luacFlavourInfo("lua51-int", { platform: "linux", arch: "x64" }).binaryName).toBe("luac.cross.int");
   });
-  it("lua53 binary is luac.cross", () => {
-    expect(luacFlavourInfo("lua53").binaryName).toBe("luac.cross");
+  it("lua53 binary is luac.cross on POSIX", () => {
+    expect(luacFlavourInfo("lua53", { platform: "linux", arch: "x64" }).binaryName).toBe("luac.cross");
+  });
+  it("lua51 binary is luac.cross.exe on Windows (matches the prebuilt zip member name)", () => {
+    expect(luacFlavourInfo("lua51", { platform: "win32", arch: "x64" }).binaryName).toBe("luac.cross.exe");
+  });
+  it("lua51-int binary is luac.cross.int.exe on Windows", () => {
+    expect(luacFlavourInfo("lua51-int", { platform: "win32", arch: "x64" }).binaryName).toBe("luac.cross.int.exe");
+  });
+  it("lua53 binary is luac.cross.exe on Windows", () => {
+    expect(luacFlavourInfo("lua53", { platform: "win32", arch: "x64" }).binaryName).toBe("luac.cross.exe");
+  });
+  it("macOS arm64 uses the bare name (no .exe)", () => {
+    expect(luacFlavourInfo("lua51", { platform: "darwin", arch: "arm64" }).binaryName).toBe("luac.cross");
   });
 });
 

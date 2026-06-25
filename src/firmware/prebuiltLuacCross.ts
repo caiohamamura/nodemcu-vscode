@@ -54,9 +54,18 @@ export function luacFlavour(config: NodemcuConfig): LuacFlavour {
   return "lua53";
 }
 
-export function luacFlavourInfo(flavour: LuacFlavour): LuacFlavourInfo {
-  if (flavour === "lua51-int") return { flavour, binaryName: "luac.cross.int" };
-  return { flavour, binaryName: "luac.cross" };
+/**
+ * The on-disk binary name for a flavour on a given host target. The
+ * `luac-cross-release` workflow zips the host tool with the platform-native
+ * name (i.e. `luac.cross.exe` on Windows, `luac.cross` on POSIX), so the
+ * extension must look for the right one — otherwise the extraction "succeeds"
+ * but the cached-file check fails and we report "Prebuilt archive did not
+ * contain luac.cross." on Windows.
+ */
+export function luacFlavourInfo(flavour: LuacFlavour, target: PrebuiltTarget): LuacFlavourInfo {
+  const ext = target.platform === "win32" ? ".exe" : "";
+  if (flavour === "lua51-int") return { flavour, binaryName: `luac.cross.int${ext}` };
+  return { flavour, binaryName: `luac.cross${ext}` };
 }
 
 export type PrebuiltPlatform = "linux" | "darwin" | "win32";
@@ -181,7 +190,7 @@ export async function resolvePrebuiltLuacCross(
 ): Promise<PrebuiltLuacCrossResult | null> {
   const target = currentPrebuiltTarget();
   const flavour = luacFlavour(config);
-  const { binaryName } = luacFlavourInfo(flavour);
+  const { binaryName } = luacFlavourInfo(flavour, target);
   const release = opts.release ?? DEFAULT_PREBUILT_RELEASE;
   const downloadBase = opts.downloadBase ?? "https://github.com";
   // The firmware tag is what the prebuilt binary was built against and is
