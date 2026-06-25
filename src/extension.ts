@@ -41,7 +41,7 @@ import { createLuaModuleCompletionItem } from "./luaPicker/luaModuleCompletion";
 import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
 import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
 import { ensureManagedFirmware } from "./firmware/managedFirmware";
-import { resolvePrebuiltLuacCross, installPrebuiltLuacCross } from "./firmware/prebuiltLuacCross";
+import { resolvePrebuiltLuacCross, installPrebuiltLuacCross, luacFlavour, readInstalledLuacFlavour } from "./firmware/prebuiltLuacCross";
 import { ensureCMake, ensureNinja } from "./tools/managedTools";
 import { SerialSessionManager } from "./serial/serialSessionManager";
 import { SerialConsoleViewProvider } from "./serial/serialConsoleView";
@@ -1602,11 +1602,23 @@ async function deployLfsImage(signal?: AbortSignal): Promise<void> {
   if (!workspaceRoot) return;
 
   const luac = luacCrossPath(fw);
-  if (!fs.existsSync(luac)) {
-    // No local build (e.g. the user has no host C compiler). Try to fetch a
-    // prebuilt matching the current Lua flavour + host target. installPrebuilt
-    // populates the same path the local build would, so the rest of the
-    // pipeline is unchanged.
+  // The build path is fixed and flavour-agnostic, so an existing binary may be
+  // a stale luac.cross from a previous lua_version / number-model. Re-fetch when
+  // it's missing OR a marker proves it's the wrong flavour for the current
+  // nodemcu.ini — otherwise it silently emits an LFS image the device rejects.
+  const desiredFlavour = luacFlavour(cfg);
+  const installedFlavour = readInstalledLuacFlavour(luac);
+  const wrongFlavour = installedFlavour !== null && installedFlavour !== desiredFlavour;
+  if (!fs.existsSync(luac) || wrongFlavour) {
+    // No usable local build (e.g. the user has no host C compiler, or the cached
+    // binary is for a different flavour). Try to fetch a prebuilt matching the
+    // current Lua flavour + host target. installPrebuilt populates the same path
+    // the local build would, so the rest of the pipeline is unchanged.
+    if (wrongFlavour) {
+      outputChannel.appendLine(
+        `[lfs-prebuilt] installed luac.cross is ${installedFlavour} but nodemcu.ini wants ${desiredFlavour}; refreshing.`,
+      );
+    }
     setStatus("building", "fetching prebuilt luac.cross...");
     const prebuilt = await resolvePrebuiltLuacCross(cfg, {
       storageRoot: extensionContext.globalStorageUri.fsPath,

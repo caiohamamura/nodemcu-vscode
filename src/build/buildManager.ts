@@ -4,7 +4,8 @@ import { Shell } from "../util/shell";
 import { ToolchainLocator, cmakeConfigureCommand, cmakeBuildCommand } from "./toolchain";
 import { writeUserModulesHeader, diffSelectedModules, readSelectedModules, writeUserConfigSsl, writeUserConfigLfs, writeUserConfigBitRate, isTlsEnabled } from "./userModulesWriter";
 import { parseProblems, summarize } from "./outputParser";
-import { appModulesDir, defaultBuildDir, userModulesHeader, userConfigHeader, binOutput, toolchainBinDirs } from "../util/paths";
+import { appModulesDir, defaultBuildDir, userModulesHeader, userConfigHeader, binOutput, toolchainBinDirs, luacCrossPath } from "../util/paths";
+import { luacFlavour, writeInstalledLuacFlavour } from "../firmware/prebuiltLuacCross";
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import type { CompileProblem } from "./outputParser";
 import type { ToolchainInfo } from "./toolchain";
@@ -213,13 +214,26 @@ export class BuildManager {
         const hostToolCmd = cmakeBuildCommand({ cmake, buildDir, parallel: ctx.parallel, jobCount: ctx.jobCount, verbose: ctx.verbose, target });
         // Tolerate failure/absence here (e.g. host compiler disabled): the main
         // build below is the real gate and will surface genuine errors.
-        await this.shell.run(hostToolCmd.command, hostToolCmd.args, {
+        const toolResult = await this.shell.run(hostToolCmd.command, hostToolCmd.args, {
           cwd: hostToolCmd.cwd,
           env,
           onStdout: ctx.onLog,
           onStderr: ctx.onStderr,
           signal: ctx.signal,
         });
+        // When the host compiler is present, this just (re)built luac.cross for
+        // the configured flavour. Record it so deployLfsImage doesn't mistake a
+        // freshly-built binary for a stale prebuilt and re-download. On a
+        // flavour switch the reconfigure above forces a real rebuild, so the
+        // marker tracks the current flavour. Skip on failure (host compiler
+        // disabled) — the binary, if any, came from a prebuilt and keeps its
+        // own marker.
+        if (target === "luac.cross" && toolResult.exitCode === 0) {
+          const luac = luacCrossPath(ctx.firmwarePath);
+          if (fs.existsSync(luac)) {
+            await writeInstalledLuacFlavour(luac, luacFlavour(ctx.config));
+          }
+        }
       }
     }
 

@@ -162,6 +162,36 @@ export function prebuiltCachePath(
   );
 }
 
+/**
+ * Sidecar that records the Lua flavour of the `luac.cross` installed at
+ * `binaryPath`. The build path ({@link luacCrossPath}) is fixed and
+ * flavour-agnostic, so without this marker a binary left over from a previous
+ * `lua_version` / number-model is silently reused after the user switches the
+ * flavour in `nodemcu.ini` — producing an LFS image the device rejects with
+ * "invalid header in precompiled chunk". The marker lets callers detect the
+ * stale binary and refresh it.
+ */
+export function luacFlavourMarkerPath(binaryPath: string): string {
+  return `${binaryPath}.flavour`;
+}
+
+const LUAC_FLAVOURS: readonly LuacFlavour[] = ["lua51", "lua51-int", "lua53"];
+
+/** Flavour recorded for the binary at `binaryPath`, or `null` if unknown. */
+export function readInstalledLuacFlavour(binaryPath: string): LuacFlavour | null {
+  try {
+    const raw = fs.readFileSync(luacFlavourMarkerPath(binaryPath), "utf-8").trim();
+    return (LUAC_FLAVOURS as readonly string[]).includes(raw) ? (raw as LuacFlavour) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record the flavour of the binary at `binaryPath` (best-effort). */
+export async function writeInstalledLuacFlavour(binaryPath: string, flavour: LuacFlavour): Promise<void> {
+  await fsp.writeFile(luacFlavourMarkerPath(binaryPath), flavour, "utf-8");
+}
+
 async function exists(p: string): Promise<boolean> {
   try { await fsp.access(p); return true; } catch { return false; }
 }
@@ -269,6 +299,8 @@ export async function installPrebuiltLuacCross(
   if (process.platform !== "win32") {
     await fsp.chmod(dest, 0o755);
   }
+  // Record the flavour so a later flavour switch can detect this binary is stale.
+  await writeInstalledLuacFlavour(dest, prebuilt.flavour);
   return dest;
 }
 

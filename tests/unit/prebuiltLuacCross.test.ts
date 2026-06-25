@@ -11,6 +11,9 @@ import {
   prebuiltCachePath,
   resolvePrebuiltLuacCross,
   installPrebuiltLuacCross,
+  readInstalledLuacFlavour,
+  writeInstalledLuacFlavour,
+  luacFlavourMarkerPath,
   DEFAULT_PREBUILT_RELEASE,
 } from "../../src/firmware/prebuiltLuacCross";
 import { defaultConfig, type NodemcuConfig } from "../../src/config/nodemcuIni";
@@ -211,6 +214,19 @@ describe("resolvePrebuiltLuacCross", () => {
     expect(fs.existsSync(dest)).toBe(true);
     // Cached copy still exists, untouched.
     expect(fs.existsSync(prebuilt.cachedPath)).toBe(true);
+    // The install records the flavour so a later flavour switch can detect a
+    // stale binary at this fixed path.
+    expect(readInstalledLuacFlavour(dest)).toBe(prebuilt.flavour);
+  });
+
+  it("flavour marker round-trips and ignores unknown/missing values", async () => {
+    const bin = path.join(tmpRoot, "luac.cross");
+    expect(readInstalledLuacFlavour(bin)).toBeNull();
+    await writeInstalledLuacFlavour(bin, "lua51-int");
+    expect(fs.existsSync(luacFlavourMarkerPath(bin))).toBe(true);
+    expect(readInstalledLuacFlavour(bin)).toBe("lua51-int");
+    fs.writeFileSync(luacFlavourMarkerPath(bin), "bogus");
+    expect(readInstalledLuacFlavour(bin)).toBeNull();
   });
 });
 
