@@ -29,6 +29,18 @@ export function userConfigHeader(firmwarePath: string): string {
   return path.join(firmwarePath, "app", "include", "user_config.h");
 }
 
+export function u8g2FontsHeader(firmwarePath: string): string {
+  return path.join(firmwarePath, "app", "include", "u8g2_fonts.h");
+}
+
+export function u8g2DisplaysHeader(firmwarePath: string): string {
+  return path.join(firmwarePath, "app", "include", "u8g2_displays.h");
+}
+
+export function ucgConfigHeader(firmwarePath: string): string {
+  return path.join(firmwarePath, "app", "include", "ucg_config.h");
+}
+
 export function esptoolScript(firmwarePath: string): string {
   return path.join(firmwarePath, "tools", "toolchains", "esptool.py");
 }

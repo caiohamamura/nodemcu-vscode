@@ -5,7 +5,7 @@ import { DEFAULT_SSL_BUFFER_SIZE, type NodemcuConfig } from "../config/nodemcuIn
 const GUARD_BEGIN = "#ifndef __USER_MODULES_H__\n#define __USER_MODULES_H__\n";
 const GUARD_END = "#endif\t/* __USER_MODULES_H__ */\n";
 
-const KNOWN_MODULES = new Set([
+export const KNOWN_MODULES = new Set([
   "adc", "ads1115", "adxl345", "am2320", "apa102", "bit", "bloom", "bmp085",
   "bme280", "bme280_math", "bme680", "coap", "color_utils", "cron", "crypto",
   "dcc", "dht", "encoder", "enduser_setup", "file", "gdbstub", "gpio",

@@ -12,7 +12,7 @@ export class IniCompletionItemProvider implements vscode.CompletionItemProvider 
 
     // Provide section completions if starting a bracket
     if (linePrefix.endsWith("[")) {
-      return ["nodemcu", "c_modules", "lua_modules", "flash", "build"].map((section) => {
+      return ["nodemcu", "c_modules", "lua_modules", "flash", "build", "u8g2_fonts", "u8g2_displays", "ucg_fonts", "ucg_displays"].map((section) => {
         const item = new vscode.CompletionItem(section, vscode.CompletionItemKind.Class);
         item.insertText = section;
         return item;
@@ -57,7 +57,7 @@ export class IniCompletionItemProvider implements vscode.CompletionItemProvider 
       else if (key === "flash_mode") items.push("dio", "qio", "dout", "qout");
       else if (key === "flash_freq") items.push("40m", "26m", "20m", "80m");
       else if (key === "flash_size") items.push("512K", "1M", "2M", "4M", "8M", "16M", "detect", "keep");
-    } else if (section === "c_modules") {
+    } else if (section === "c_modules" || section === "u8g2_fonts" || section === "u8g2_displays" || section === "ucg_fonts" || section === "ucg_displays") {
       items.push("true", "false");
     } else if (section === "build") {
       if (["parallel", "verbose"].includes(key)) items.push("true", "false");

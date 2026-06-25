@@ -14,14 +14,21 @@ import {
   hasDeviceUuid,
   setCModule,
   setLuaModule,
+  setGraphicsEntry,
   isLfsEnabled,
   TLS_ENABLE_SSL_BUFFER_SIZE,
   DEFAULT_LFS_SIZE,
+  type GraphicsSection,
   type NodemcuConfig,
 } from "./config/nodemcuIni";
 import { IniCompletionItemProvider } from "./config/iniCompletion";
 import { ConfigWatcher } from "./config/configWatcher";
-import { resolveFirmwarePath, luaModulesDir, userModulesHeader, luacCrossPath, lfsImagePath } from "./util/paths";
+import { resolveFirmwarePath, luaModulesDir, userModulesHeader, u8g2FontsHeader, ucgConfigHeader, luacCrossPath, lfsImagePath } from "./util/paths";
+import { readActiveEntries } from "./build/graphicsConfigWriter";
+import { listU8g2Fonts, listUcgFonts } from "./firmware/graphicsCatalog";
+import { createFontCompletionItem, type FontLib } from "./luaPicker/fontCompletion";
+import { LuaDiagnosticsController } from "./lua/luaDiagnosticsController";
+import { NodemcuLuaCodeActionProvider } from "./lua/luaCodeActions";
 import { isCModulesConfigChanged } from "./build/userModulesWriter";
 import { BuildManager } from "./build/buildManager";
 import { ToolchainLocator } from "./build/toolchain";
@@ -37,7 +44,7 @@ import { planMirrorSync } from "./upload/srcMirror";
 import { StatusEmitter, type BuildState, type StatusUpdate } from "./status/statusBar";
 import { PythonManager } from "./python/pythonManager";
 import { listLuaModulesFromFirmware, listCModules, selectMainFileForConfig, type LuaModuleInfo, type CModuleInfo } from "./luaPicker/moduleList";
-import { createLuaModuleCompletionItem } from "./luaPicker/luaModuleCompletion";
+import { createLuaModuleCompletionItem, luaModuleSource } from "./luaPicker/luaModuleCompletion";
 import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
 import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
 import { ensureManagedFirmware } from "./firmware/managedFirmware";
@@ -58,6 +65,7 @@ let extensionContext: vscode.ExtensionContext;
 let serialSessionManager: SerialSessionManager;
 let serialConsoleViewProvider: SerialConsoleViewProvider;
 let serialAutoConnectSuppressed = false;
+let luaDiagnostics: LuaDiagnosticsController | undefined;
 
 const SERIAL_AUTO_CONNECT_SUPPRESSED_KEY = "nodemcu.serialAutoConnectSuppressed";
 
@@ -360,6 +368,8 @@ async function getFirmwarePath(): Promise<string | null> {
       );
       cachedFirmwarePath = fwPath;
       refreshAll();
+      luaDiagnostics?.invalidateCatalog();
+      luaDiagnostics?.refreshAll();
       return fwPath;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1815,7 +1825,75 @@ async function doAcceptLuaModuleCompletion(signal: AbortSignal | undefined, modu
   cachedConfig = newCfg;
   saveConfig(iniPath, newCfg);
   refreshAll();
+  luaDiagnostics?.refreshAll();
   await doSyncLuaModules(signal);
+}
+
+/** Quick-fix: enable a C module referenced from Lua that isn't in [c_modules]. */
+function doEnableCModuleFromFix(name: string): void {
+  const cfg = getConfigOrNull();
+  const iniPath = existingIniPath();
+  if (!cfg || !iniPath) {
+    vscode.window.showWarningMessage(`No nodemcu.ini found to enable C module "${name}".`);
+    return;
+  }
+  const newCfg = setCModule(cfg, name, true);
+  cachedConfig = newCfg;
+  saveConfig(iniPath, newCfg);
+  refreshAll();
+  luaDiagnostics?.refreshAll();
+  vscode.window.showInformationMessage(`Enabled C module "${name}" in nodemcu.ini. Rebuild the firmware to apply.`);
+}
+
+/** Quick-fix: enable a Lua module required() but missing from [lua_modules]. */
+async function doEnableLuaModuleFromFix(signal: AbortSignal | undefined, name: string): Promise<void> {
+  const cfg = getConfigOrNull();
+  if (!cfg) {
+    vscode.window.showWarningMessage(`No nodemcu.ini found to enable Lua module "${name}".`);
+    return;
+  }
+  let source = `lua_modules/${name}/${name}.lua`;
+  const fw = await getFirmwarePath();
+  if (fw) {
+    const mod = (await listLuaModulesFromFirmware(fw)).find((m) => m.name === name);
+    if (mod) source = luaModuleSource(mod, cfg.nodemcu);
+  }
+  await doAcceptLuaModuleCompletion(signal, name, source);
+}
+
+/**
+ * Quick-fix: add a font to the firmware's compiled font table. When the
+ * nodemcu.ini section is still empty we first seed it with the fonts currently
+ * baked into the firmware header, so adding one font never drops the defaults.
+ */
+function enableFontFromFix(section: GraphicsSection, module: "u8g2" | "ucg", headerPath: string, kind: Parameters<typeof readActiveEntries>[1], name: string): void {
+  const cfg = getConfigOrNull();
+  const iniPath = existingIniPath();
+  if (!cfg || !iniPath) {
+    vscode.window.showWarningMessage(`No nodemcu.ini found to add font "${name}".`);
+    return;
+  }
+  const seed = readActiveEntries(headerPath, kind);
+  // Compiling a font is pointless unless its display library is also built in,
+  // so make sure the C module is enabled alongside the font entry.
+  const newCfg = setCModule(setGraphicsEntry(cfg, section, name, true, seed), module, true);
+  cachedConfig = newCfg;
+  saveConfig(iniPath, newCfg);
+  refreshAll();
+  luaDiagnostics?.refreshAll();
+  vscode.window.showInformationMessage(`Added font "${name}" to [${section}]. Rebuild the firmware to compile it in.`);
+}
+
+async function doEnableU8g2FontFromFix(name: string): Promise<void> {
+  const fw = await getFirmwarePath();
+  if (!fw) return;
+  enableFontFromFix("u8g2_fonts", "u8g2", u8g2FontsHeader(fw), "u8g2Font", name);
+}
+
+async function doEnableUcgFontFromFix(name: string): Promise<void> {
+  const fw = await getFirmwarePath();
+  if (!fw) return;
+  enableFontFromFix("ucg_fonts", "ucg", ucgConfigHeader(fw), "ucgFont", name);
 }
 
 async function doUploadAndMonitor(signal?: AbortSignal): Promise<void> {
@@ -2117,6 +2195,57 @@ class LuaModuleCompletionProvider implements vscode.CompletionItemProvider {
   }
 }
 
+/**
+ * The set of fonts effectively compiled into the firmware for `lib`: the enabled
+ * keys of the nodemcu.ini section, or — when that section is empty — the fonts
+ * currently active in the firmware header (the shipped defaults the build keeps).
+ * Mirrors the diagnostics controller so completion and diagnostics agree.
+ */
+function effectiveEnabledFonts(cfg: NodemcuConfig, fw: string, lib: FontLib): Set<string> {
+  const section = lib === "u8g2" ? cfg.u8g2_fonts : cfg.ucg_fonts;
+  const keys = Object.entries(section).filter(([, v]) => v).map(([k]) => k);
+  if (keys.length > 0) return new Set(keys);
+  const headerPath = lib === "u8g2" ? u8g2FontsHeader(fw) : ucgConfigHeader(fw);
+  return new Set(readActiveEntries(headerPath, lib === "u8g2" ? "u8g2Font" : "ucgFont"));
+}
+
+/**
+ * Completes `u8g2.font_*` / `ucg.font_*` from the firmware's full font catalog.
+ * Accepting a font that isn't compiled yet also enables it in nodemcu.ini (via
+ * the item's command). The per-firmware catalog (~1100 u8g2 + ~1240 ucg names)
+ * is parsed once and cached.
+ */
+class FontCompletionProvider implements vscode.CompletionItemProvider {
+  private readonly cache = new Map<string, { u8g2: string[]; ucg: string[] }>();
+
+  async provideCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+  ): Promise<vscode.CompletionItem[] | undefined> {
+    const prefix = document.lineAt(position).text.slice(0, position.character);
+    const m = /\b(u8g2|ucg)\.(\w*)$/.exec(prefix);
+    if (!m) return undefined;
+    const lib = m[1] as FontLib;
+    const fw = await getFirmwarePath();
+    if (!fw) return undefined;
+    const catalog = this.catalogFor(fw);
+    const fonts = lib === "u8g2" ? catalog.u8g2 : catalog.ucg;
+    if (fonts.length === 0) return undefined;
+    const cfg = getConfigOrNull();
+    const enabled = cfg ? effectiveEnabledFonts(cfg, fw, lib) : new Set<string>();
+    return fonts.map((f) => createFontCompletionItem(lib, f, enabled.has(f)));
+  }
+
+  private catalogFor(fw: string): { u8g2: string[]; ucg: string[] } {
+    let cached = this.cache.get(fw);
+    if (!cached) {
+      cached = { u8g2: listU8g2Fonts(fw), ucg: listUcgFonts(fw) };
+      this.cache.set(fw, cached);
+    }
+    return cached;
+  }
+}
+
 function scheduleSrcSyncUri(uri: vscode.Uri): void {
   const cfg = getConfigOrNull();
   if (!cfg || !isUriUnderSrc(uri, cfg)) return;
@@ -2268,6 +2397,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const previous = cachedConfig;
       if (previous && previous.nodemcu.firmware_path !== c.nodemcu.firmware_path) {
         cachedFirmwarePath = null;
+        luaDiagnostics?.invalidateCatalog();
       }
       const serialConfigChanged = !!previous
         && (previous.nodemcu.port !== c.nodemcu.port || getConfiguredBaud(previous) !== getConfiguredBaud(c));
@@ -2276,6 +2406,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       cachedConfig = c;
       refreshAll();
+      luaDiagnostics?.refreshAll();
       updatePortStatusBar(c);
       if (serialConfigChanged && !serialAutoConnectSuppressed) {
         void focusAndConnectSerialConsole();
@@ -2290,7 +2421,20 @@ export function activate(context: vscode.ExtensionContext): void {
 
   refreshAll();
   void projectTasksProvider.reload();
-  
+
+  luaDiagnostics = new LuaDiagnosticsController({
+    getConfig: () => getConfigOrNull(),
+    getFirmwarePath: () => getFirmwarePath(),
+    log: (m) => outputChannel?.appendLine(m),
+  });
+  context.subscriptions.push(
+    luaDiagnostics,
+    vscode.workspace.onDidOpenTextDocument((d) => luaDiagnostics?.onOpen(d)),
+    vscode.workspace.onDidChangeTextDocument((e) => luaDiagnostics?.onChange(e.document)),
+    vscode.workspace.onDidCloseTextDocument((d) => luaDiagnostics?.onClose(d)),
+  );
+  luaDiagnostics.refreshAll();
+
   void refreshDetectedPortsAndMaybeSelect();
   portRefreshTimer = setInterval(() => {
     void refreshDetectedPortsAndMaybeSelect();
@@ -2317,6 +2461,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nodemcu-vscode.disableLfs", commandWithOperation("Disable LFS", doDisableLfs)),
     vscode.commands.registerCommand("nodemcu-vscode.buildAndDeployLfs", commandWithOperation("Build & Deploy LFS", doBuildAndDeployLfs)),
     vscode.commands.registerCommand("nodemcu-vscode.acceptLuaModuleCompletion", commandWithOperation("Accept Lua Module", doAcceptLuaModuleCompletion)),
+    vscode.commands.registerCommand("nodemcu-vscode.enableCModuleFromFix", doEnableCModuleFromFix),
+    vscode.commands.registerCommand("nodemcu-vscode.enableLuaModuleFromFix", commandWithOperation("Enable Lua Module", doEnableLuaModuleFromFix)),
+    vscode.commands.registerCommand("nodemcu-vscode.enableU8g2FontFromFix", doEnableU8g2FontFromFix),
+    vscode.commands.registerCommand("nodemcu-vscode.enableUcgFontFromFix", doEnableUcgFontFromFix),
     vscode.commands.registerCommand("nodemcu-vscode.openSerialMonitor", doOpenSerialMonitor),
     vscode.commands.registerCommand("nodemcu-vscode.disconnectSerialSession", doDisconnectSerialSession),
     vscode.commands.registerCommand("nodemcu-vscode.releaseSerialPort", doReleaseSerialPort),
@@ -2341,6 +2489,16 @@ export function activate(context: vscode.ExtensionContext): void {
       { language: "lua" },
       new LuaModuleCompletionProvider(),
       ..."_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".split("")
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      { language: "lua" },
+      new FontCompletionProvider(),
+      ".", ..."_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".split("")
+    ),
+    vscode.languages.registerCodeActionsProvider(
+      { language: "lua" },
+      new NodemcuLuaCodeActionProvider(),
+      { providedCodeActionKinds: NodemcuLuaCodeActionProvider.providedKinds }
     )
   );
 }

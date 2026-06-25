@@ -23,6 +23,7 @@ development is as simple as editing files in `src/` and pressing Save.
 - ✅ **Auto-upload on save** — save a file in `src/` and it runs on the board
 - ✅ **Live Serial Console** — always in view in the bottom panel
 - ✅ **NodeMCU Lua IntelliSense** — completion and hover docs for the device API
+- ✅ **Config-aware warnings & quick-fixes** — using a C/Lua module or a `u8g2`/`ucg` font that isn't enabled in `nodemcu.ini` gets a warning with a one-click fix that enables it; `u8g2.font_*` / `ucg.font_*` autocomplete enables the picked font on accept.
 - ✅ **Lua and C module management** — pick modules with checkboxes in the sidebar and automatically update the firmware and flash it to the board.
 - ✅ **Serial port explorer** — seamless device switching, it warns if try to sync a different device from the one initially set.
 - ✅ **No ESPlorer, no `nodemcu-tool` setup, no firmware checkout required**
@@ -268,6 +269,8 @@ Important settings:
 | `nodemcu.flash_size` | Flash size such as `1M`, `4M`, or `detect`. |
 | `[c_modules]` | Firmware modules compiled into the image. |
 | `[lua_modules]` | Lua library modules synced to the device as compiled `.lc` files. |
+| `[u8g2_fonts]` / `[ucg_fonts]` | Fonts compiled into the image (bare `font_*` names). Empty/omitted keeps the firmware default; the "Compile font" quick-fix and font autocomplete populate these. |
+| `[u8g2_displays]` / `[ucg_displays]` | Display drivers compiled into the image (by binding name). |
 | `[devices] uuids` | Approved device IDs for the workspace. |
 | `[sync] last_timestamp` | Internal timestamp used for incremental sync. |
 

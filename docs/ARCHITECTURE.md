@@ -143,6 +143,29 @@ Tree checkbox change → `doToggleCModule` / `doAddLuaModule` →
 `setCModule` / `setLuaModule` mutate config → `saveConfig` → `userModulesWriter`
 regenerates the header → next build reconfigures.
 
+### 3.9 Module / font diagnostics & quick-fixes
+`LuaDiagnosticsController` (`lua/luaDiagnosticsController.ts`) watches open Lua docs
+and runs the pure `computeLuaDiagnostics` (`lua/luaDiagnostics.ts`) against the
+current config + firmware catalog, flagging: C-module globals not enabled in
+`[c_modules]`, `require()`d Lua modules missing from `[lua_modules]`, and
+`u8g2.font_*` / `ucg.font_*` references not compiled into the image. The
+`NodemcuLuaCodeActionProvider` offers a quick-fix per diagnostic; accepting runs
+`enableCModuleFromFix` / `enableLuaModuleFromFix` / `enable{U8g2,Ucg}FontFromFix`,
+which edit `nodemcu.ini` (font fixes seed the firmware-default fonts first, so a
+single addition never drops defaults, and also enable the `u8g2`/`ucg` C module).
+`FontCompletionProvider` completes `u8g2.font_*` / `ucg.font_*` from the catalog,
+sorting already-compiled fonts first and enabling the picked one on accept. The
+catalog (`firmware/graphicsCatalog.ts`) and active-table parsing/regeneration
+(`build/graphicsConfigWriter.ts`) feed both paths.
+
+### 3.10 Compile u8g2 / ucg fonts & display drivers
+The `[u8g2_fonts]` / `[u8g2_displays]` / `[ucg_fonts]` / `[ucg_displays]` sections
+list which entries to bake in. On build, `graphicsConfigWriter` rewrites only the
+active `#define *_TABLE` block in `app/include/u8g2_fonts.h`, `u8g2_displays.h`
+(routing each binding into the I2C/SPI table) and `ucg_config.h`, leaving the
+commented driver catalog intact. An empty section is a no-op (preserves the
+firmware default); a change forces a reconfigure like the `user_config.h` toggles.
+
 ---
 
 ## 4. Subsystem deep-dives
@@ -230,6 +253,8 @@ managed-firmware promise, port selection, and Lua API regeneration.
 | `parseIni(content)` / `serializeIni(config)` | fn | ini text ⇄ `NodemcuConfig`. |
 | `loadConfig(path)` / `saveConfig(path, config)` | fn | Disk I/O wrappers. |
 | `setCModule` / `setLuaModule` | fn | Toggle a module, return new config. |
+| `GRAPHICS_SECTIONS`, `GraphicsSection` | const/type | The four `[u8g2_fonts]`/`[u8g2_displays]`/`[ucg_fonts]`/`[ucg_displays]` sections. |
+| `setGraphicsEntry(config, section, name, enabled, seedDefaults?)` | fn | Toggle a font/display; seeds firmware defaults when first populating an empty section. |
 | `getLuaModuleEntries(config)` | fn | Normalized list of `[lua_modules]` entries. |
 | `hasDeviceUuid` / `addDeviceUuid` | fn | Track per-device UUIDs. |
 | `isLfsEnabled(config)` | fn | Whether LFS is on. |
@@ -266,6 +291,16 @@ Private `luaFlavourChanged`, `binPaths`.
 | `setUserConfigLfs` / `writeUserConfigLfs` | fn | Set LFS size in `user_config.h`. |
 | `setUserConfigBitRate` / `writeUserConfigBitRate` | fn | Sync default baud into the header. |
 
+**`graphicsConfigWriter.ts`** — regenerate the active table block in the u8g2/ucg
+graphics headers from config. `setU8g2FontsContent` / `setU8g2DisplaysContent`
+(routes bindings into the I2C/SPI tables) / `setUcgContent`, and their on-disk
+`writeU8g2FontsHeader` / `writeU8g2DisplaysHeader` / `writeUcgConfigHeader`
+(return `true` when changed → drives reconfigure). `activeU8g2Fonts` /
+`activeU8g2Displays` / `activeUcgFonts` / `activeUcgDisplays` + `readActiveEntries`
+read the currently-compiled entries (used for diagnostics + quick-fix seeding).
+Empty config preserves the firmware default. `userModulesWriter` also exports
+`KNOWN_MODULES` (consumed by the diagnostics).
+
 **`outputParser.ts`** — `parseProblems(output)` → `CompileProblem[]` (GCC + CMake
 regex), `summarize(problems)`, `extractModuleBuildSummary(output)` (built/skipped/failed
 per module). Pure, no vscode dep.
@@ -277,6 +312,12 @@ per module). Pure, no vscode dep.
 
 **`managedFirmware.ts`** — `ensureManagedFirmware(opts)` (download/extract/patch),
 `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL`.
+
+**`graphicsCatalog.ts`** — parse the available u8g2/ucg fonts + display drivers
+from the firmware sources: `listU8g2Fonts` / `listUcgFonts` (from the never-edited
+`u8g2.h` / `ucg.h`, prefix-stripped), `listU8g2Displays` / `listUcgDisplays` (from
+the `*_TABLE_ENTRY(...)` lines in the config headers, including the commented
+catalog). `DisplayCatalogEntry` (if) carries binding/setup/bus/extension.
 
 **`prebuiltLuacCross.ts`**
 | Symbol | Kind | What it does |
@@ -340,13 +381,24 @@ is the firmware folder — they can differ.
 `workspaceRoot/<source>` → `firmware/lua_modules/<name>/<basename>` → `firmware/lua_modules/<source>`.
 **`luaPicker/luaModuleCompletion.ts`** — `createLuaModuleCompletionItem`,
 `luaModuleRequireText`, `luaModuleSource` (build the completion + accept payload).
+**`luaPicker/fontCompletion.ts`** — `createFontCompletionItem(lib, font, compiled)`:
+`u8g2.font_*` / `ucg.font_*` completion item; compiled fonts sort first, others
+carry the enable-on-accept command. `FontLib` (type).
+
+### 5.8a `src/lua/` — Lua diagnostics & quick-fixes
+
+| File | Symbol | What it does |
+| --- | --- | --- |
+| `luaDiagnostics.ts` | `computeLuaDiagnostics(text, ctx)`, `LuaDiagnostic`/`LuaDiagnosticsContext`/`DiagnosticActionKind` | Pure (no vscode) scan for disabled C/Lua modules + uncompiled/unknown fonts; each fixable diagnostic carries a `<actionKind>:<name>` code. |
+| `luaDiagnosticsController.ts` | `LuaDiagnosticsController` (cls) | Owns the `nodemcu` diagnostic collection; debounces doc changes, caches the per-firmware catalog (fonts + lua modules + active header fonts), maps descriptors → `vscode.Diagnostic`. Empty font section → active header fonts count as enabled. |
+| `luaCodeActions.ts` | `NodemcuLuaCodeActionProvider` (cls) | Turns each fixable diagnostic into a quick-fix `CodeAction` bound to a `nodemcu-vscode.*FromFix` command. |
 
 ### 5.9 `src/util/`, `src/tools/`, `src/python/`, `src/status/`
 
 | File | Symbol | What it does |
 | --- | --- | --- |
 | `util/shell.ts` | `Shell` (cls), `quoteArg`, `formatCommand`, `CommandSpec` (if) | `spawn` wrapper with `onStdout`/`onStderr`, `windowsHide`, cross-platform `which`. |
-| `util/paths.ts` | `resolveFirmwarePath`, `defaultBuildDir`, `userModulesHeader`, `userConfigHeader`, `esptoolScript`, `luaModulesDir`, `appModulesDir`, `binOutput`, `luacCrossPath`, `lfsImagePath`, `cModuleNameFromFile`, `isOptionalCModule`, `toolchainBinDirs` | Pure firmware-relative path helpers. |
+| `util/paths.ts` | `resolveFirmwarePath`, `defaultBuildDir`, `userModulesHeader`, `userConfigHeader`, `u8g2FontsHeader`, `u8g2DisplaysHeader`, `ucgConfigHeader`, `esptoolScript`, `luaModulesDir`, `appModulesDir`, `binOutput`, `luacCrossPath`, `lfsImagePath`, `cModuleNameFromFile`, `isOptionalCModule`, `toolchainBinDirs` | Pure firmware-relative path helpers. |
 | `util/commandQueue.ts` | `CommandQueue` (cls) | FIFO device-op queue with cancel; emits state. |
 | `tools/managedTools.ts` | `ensureCMake`, `ensureNinja`, `ensureManagedPython` | Download/locate build tools on demand. |
 | `python/pythonManager.ts` | `PythonManager` (cls) | Locate/manage a Python interpreter for esptool. |
@@ -362,8 +414,10 @@ is the firmware folder — they can differ.
 | Add / rename a command | `package.json` (`contributes.commands` + `activationEvents`), `activate()` registration, and a `doX` handler in `src/extension.ts`. |
 | Change ini schema / defaults | `src/config/nodemcuIni.ts` and `resources/templates/nodemcu.ini`. |
 | Change build flags / generator detection | `src/build/toolchain.ts`, `src/build/buildManager.ts`. |
-| Change the C-module list / dependencies | `src/build/userModulesWriter.ts` (`MODULE_DEPENDENCIES`, `MANDATORY_C_MODULES`), `src/luaPicker/moduleList.ts` (optional/library lists). |
+| Change the C-module list / dependencies | `src/build/userModulesWriter.ts` (`MODULE_DEPENDENCIES`, `MANDATORY_C_MODULES`, `KNOWN_MODULES`), `src/luaPicker/moduleList.ts` (optional/library lists). |
 | Change generated Lua API stubs | `src/luaApi/apiFiles.ts` (`KNOWN_GLOBALS`). |
+| Change Lua diagnostics / quick-fixes | `src/lua/luaDiagnostics.ts` (rules), `src/lua/luaDiagnosticsController.ts` (context/wiring), `src/lua/luaCodeActions.ts` (quick-fix mapping), and the `*FromFix` handlers in `src/extension.ts`. |
+| Change which fonts/displays compile (or the ini sections) | `src/build/graphicsConfigWriter.ts` (header regen), `src/firmware/graphicsCatalog.ts` (catalog parsing), `src/config/nodemcuIni.ts` (sections), `src/build/buildManager.ts` (wiring). |
 | Change serial / REPL behavior | `src/serial/*`, `src/device/serialDeviceClient.ts`. |
 | Bump firmware version or patches | `src/firmware/managedFirmware.ts`, `src/firmware/prebuiltLuacCross.ts`. |
 | Change upload logic | `src/upload/srcMirror.ts`, `src/device/serialDeviceClient.ts`. |

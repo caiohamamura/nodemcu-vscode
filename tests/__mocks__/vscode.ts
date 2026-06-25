@@ -155,6 +155,46 @@ export class ThemeIcon {
   constructor(readonly id: string) {}
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostics / code actions
+// ---------------------------------------------------------------------------
+export const DiagnosticSeverity = {
+  Error: 0,
+  Warning: 1,
+  Information: 2,
+  Hint: 3,
+} as const;
+
+export class Position {
+  constructor(readonly line: number, readonly character: number) {}
+}
+
+export class Range {
+  readonly start: Position;
+  readonly end: Position;
+  constructor(startLine: number, startChar: number, endLine: number, endChar: number) {
+    this.start = new Position(startLine, startChar);
+    this.end = new Position(endLine, endChar);
+  }
+}
+
+export class Diagnostic {
+  source?: string;
+  code?: string | number;
+  constructor(readonly range: Range, readonly message: string, readonly severity?: number) {}
+}
+
+export class CodeActionKind {
+  private constructor(readonly value: string) {}
+  static readonly QuickFix = new CodeActionKind("quickfix");
+}
+
+export class CodeAction {
+  diagnostics?: Diagnostic[];
+  command?: { command: string; title: string; arguments?: unknown[] };
+  constructor(readonly title: string, readonly kind?: CodeActionKind) {}
+}
+
 export class TreeItem {
   description?: string;
   contextValue?: string;
@@ -275,6 +315,18 @@ export const workspace = {
   onDidSaveTextDocument(): Disposable {
     return new Disposable(() => {});
   },
+  onDidOpenTextDocument(): Disposable {
+    return new Disposable(() => {});
+  },
+  onDidChangeTextDocument(): Disposable {
+    return new Disposable(() => {});
+  },
+  onDidCloseTextDocument(): Disposable {
+    return new Disposable(() => {});
+  },
+  onDidDeleteFiles(): Disposable {
+    return new Disposable(() => {});
+  },
   openTextDocument: async () => ({}),
 };
 
@@ -288,5 +340,25 @@ export const commands = {
 export const languages = {
   registerCompletionItemProvider(): Disposable {
     return new Disposable(() => {});
+  },
+  registerCodeActionsProvider(): Disposable {
+    return new Disposable(() => {});
+  },
+  createDiagnosticCollection(_name?: string) {
+    const map = new Map<string, Diagnostic[]>();
+    return {
+      set(uri: Uri, diags: Diagnostic[]): void {
+        map.set(uri.toString(), diags);
+      },
+      delete(uri: Uri): void {
+        map.delete(uri.toString());
+      },
+      clear(): void {
+        map.clear();
+      },
+      dispose(): void {
+        map.clear();
+      },
+    };
   },
 };

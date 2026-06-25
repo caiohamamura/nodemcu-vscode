@@ -96,6 +96,7 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │   │   ├── buildManager.ts         ← cmake configure + build orchestration
 │   │   ├── toolchain.ts            ← locate cmake/python/ninja/make; emit commands
 │   │   ├── userModulesWriter.ts    ← generate/parse app/include/user_modules.h
+│   │   ├── graphicsConfigWriter.ts ← regen u8g2/ucg font+display tables in their headers
 │   │   └── outputParser.ts         ← GCC + CMake error → CompileProblem[]
 │   ├── config/                     ← nodemcu.ini
 │   │   ├── nodemcuIni.ts           ← parse/serialize/save/load, defaults, setters
@@ -103,7 +104,12 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │   ├── device/
 │   │   └── liveEditFs.ts           ← in-memory nodemcu-live: filesystem for Device Files live edit
 │   ├── firmware/
-│   │   └── managedFirmware.ts      ← download/extract/patch the bundled firmware
+│   │   ├── managedFirmware.ts      ← download/extract/patch the bundled firmware
+│   │   └── graphicsCatalog.ts      ← parse available u8g2/ucg fonts + display drivers
+│   ├── lua/                        ← Lua-file diagnostics & quick-fixes
+│   │   ├── luaDiagnostics.ts       ← pure scan: disabled modules + uncompiled fonts
+│   │   ├── luaDiagnosticsController.ts ← owns the diagnostic collection + catalog cache
+│   │   └── luaCodeActions.ts       ← quick-fixes → nodemcu-vscode.*FromFix commands
 │   ├── flash/
 │   │   ├── autoPort.ts             ← choose when detected serial ports can be auto-selected
 │   │   ├── flashManager.ts         ← esptool.py write_flash (or python -m esptool)
@@ -112,6 +118,7 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │   │   └── apiFiles.ts             ← generate .vscode/nodemcu-api.lua + .luarc.json
 │   ├── luaPicker/
 │   │   ├── luaModuleCompletion.ts  ← Lua require() completion item helpers
+│   │   ├── fontCompletion.ts       ← u8g2.font_*/ucg.font_* completion (enable on accept)
 │   │   ├── moduleList.ts           ← scan firmware/lua_modules + app/modules
 │   │   └── luaModuleResolver.ts    ← resolve local/remote lua module sources
 │   ├── status/
@@ -126,19 +133,23 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │       └── shell.ts                ← spawn wrapper with onStdout/onStderr + quoting
 │
 ├── tests/
-│   ├── unit/                       ← fast, no I/O outside tmp dirs (20 files, 173 tests)
+│   ├── unit/                       ← fast, no I/O outside tmp dirs
 │   │   ├── apiFiles.test.ts
 │   │   ├── asyncTreeProvider.test.ts
 │   │   ├── autoPort.test.ts
 │   │   ├── commandQueue.test.ts
 │   │   ├── deviceIdentity.test.ts
 │   │   ├── directSerialUploader.test.ts
+│   │   ├── fontCompletion.test.ts
+│   │   ├── graphicsConfigWriter.test.ts
 │   │   ├── liveEditFs.test.ts
 │   │   ├── liveEditSave.test.ts
+│   │   ├── luaDiagnostics.test.ts
 │   │   ├── luaModuleCompletion.test.ts
 │   │   ├── luaModuleResolver.test.ts
 │   │   ├── managedFirmware.test.ts
 │   │   ├── nodemcuIni.test.ts
+│   │   ├── nodemcuIniGraphics.test.ts
 │   │   ├── outputParser.test.ts
 │   │   ├── packageManifest.test.ts
 │   │   ├── paths.test.ts
@@ -147,8 +158,9 @@ Any code change requires a rebuild + window reload (or `npm run watch` + reload)
 │   │   ├── srcMirror.test.ts
 │   │   ├── toolchain.test.ts
 │   │   └── userModulesWriter.test.ts
-│   ├── integration/                ← fakes the shell (3 files, 26 tests)
+│   ├── integration/                ← fakes the shell / real temp files
 │   │   ├── configWatcher.test.ts
+│   │   ├── graphicsCatalog.test.ts ← catalog parsing against a synthetic firmware
 │   │   ├── managers.test.ts        ← BuildManager, FlashManager, NodemcuTool
 │   │   └── moduleList.test.ts
 │
@@ -213,13 +225,19 @@ Extension Development Host (see §9).
 
 | File | Exports | Notes |
 | --- | --- | --- |
-| `src/build/buildManager.ts` | `BuildManager` | Diffs `user_modules.h`; if C modules added/removed, `cmake -S` reconfigures, then `cmake --build`. Returns `BuildResult { success, problems, summary, binPaths, durationMs, needsReconfigure, modulesChanged }`. |
+| `src/build/buildManager.ts` | `BuildManager` | Diffs `user_modules.h` and regenerates the u8g2/ucg graphics headers (via `graphicsConfigWriter`); if C modules / user_config toggles / graphics tables changed, `cmake -S` reconfigures, then `cmake --build`. Returns `BuildResult { success, problems, summary, binPaths, durationMs, needsReconfigure, modulesChanged }`. |
 | `src/device/liveEditFs.ts` | `LiveEditFileSystemProvider`, `LIVE_EDIT_SCHEME` | Writable in-memory `nodemcu-live:` documents for Device Files live edit; saves are uploaded by `extension.ts`. |
 | `src/flash/autoPort.ts` | `chooseAutoPort`, `isNodeMcuLikePort` | Pure auto-selection policy: keep available configured port; otherwise select only an unambiguous single or NodeMCU-like port. |
 | `src/build/toolchain.ts` | `ToolchainLocator`, `cmakeConfigureCommand`, `cmakeBuildCommand`, `esptoolFlashCommand`, `normalizeFlashSize` | Detects Ninja > MSYS Makefiles > NMake > MinGW > Unix Makefiles; normalizes `4M` → `4MB`. |
-| `src/build/userModulesWriter.ts` | `generateUserModulesHeader`, `writeUserModulesHeader`, `readSelectedModules`, `diffSelectedModules`, `isCModulesConfigChanged`, `isTlsEnabled`, `setUserConfigSsl`, `writeUserConfigSsl` | Hardcoded `KNOWN_MODULES` set; emits `LUA_USE_MODULES_<NAME>` defines. `MODULE_DEPENDENCIES` force-enables deps (`tls` → `http`). `writeUserConfigSsl` toggles `CLIENT_SSL_ENABLE` / `SSL_BUFFER_SIZE` in `app/include/user_config.h` to match the `tls` module (buffer size from `[build] ssl_buffer_size`, default `4096`); `BuildManager.build` calls it and folds its return into `needsReconfigure`. |
+| `src/build/userModulesWriter.ts` | `generateUserModulesHeader`, `writeUserModulesHeader`, `readSelectedModules`, `diffSelectedModules`, `isCModulesConfigChanged`, `isTlsEnabled`, `setUserConfigSsl`, `writeUserConfigSsl` | Hardcoded `KNOWN_MODULES` set (exported; reused by the Lua diagnostics); emits `LUA_USE_MODULES_<NAME>` defines. `MODULE_DEPENDENCIES` force-enables deps (`tls` → `http`). `writeUserConfigSsl` toggles `CLIENT_SSL_ENABLE` / `SSL_BUFFER_SIZE` in `app/include/user_config.h` to match the `tls` module (buffer size from `[build] ssl_buffer_size`, default `4096`); `BuildManager.build` calls it and folds its return into `needsReconfigure`. |
 | `src/build/outputParser.ts` | `parseProblems`, `summarize`, `extractModuleBuildSummary` | Pure regex; no vscode dependency. |
-| `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
+| `src/build/graphicsConfigWriter.ts` | `setU8g2FontsContent`, `setU8g2DisplaysContent`, `setUcgContent`, `writeU8g2FontsHeader`, `writeU8g2DisplaysHeader`, `writeUcgConfigHeader`, `activeU8g2Fonts`, `activeU8g2Displays`, `activeUcgFonts`, `activeUcgDisplays`, `readActiveEntries` | Rewrites only the active `#define *_TABLE` block in `u8g2_fonts.h` / `u8g2_displays.h` (I2C/SPI auto-routed) / `ucg_config.h` from the `[u8g2_*]`/`[ucg_*]` sections; empty section preserves the firmware default. `write*` return `true` on change → `BuildManager.build` folds them into `needsReconfigure`. |
+| `src/firmware/graphicsCatalog.ts` | `listU8g2Fonts`, `listUcgFonts`, `listU8g2Displays`, `listUcgDisplays`, `DisplayCatalogEntry` | Parses available fonts (from `u8g2.h`/`ucg.h`, prefix-stripped) + display drivers (from `*_TABLE_ENTRY(...)` incl. the commented catalog). |
+| `src/lua/luaDiagnostics.ts` | `computeLuaDiagnostics`, `LuaDiagnosticsContext`, `LuaDiagnostic` | Pure scan: disabled C/Lua modules + uncompiled/unknown `u8g2.font_*`/`ucg.font_*`. Fixable diagnostics carry a `<actionKind>:<name>` code. No vscode dep. |
+| `src/lua/luaDiagnosticsController.ts` | `LuaDiagnosticsController` | Owns the `nodemcu` diagnostic collection; debounces changes, caches the per-firmware catalog (fonts + lua modules + active header fonts). Empty font section → active header fonts treated as enabled (firmware default). |
+| `src/lua/luaCodeActions.ts` | `NodemcuLuaCodeActionProvider` | Maps each fixable diagnostic to a quick-fix bound to a `nodemcu-vscode.*FromFix` command. |
+| `src/luaPicker/fontCompletion.ts` | `createFontCompletionItem`, `FontLib` | `u8g2.font_*`/`ucg.font_*` completion item; compiled fonts sort first, others enable-on-accept. |
+| `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `setGraphicsEntry`, `getLuaModuleEntries`, `GRAPHICS_SECTIONS` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`, and `[u8g2_fonts]`/`[u8g2_displays]`/`[ucg_fonts]`/`[ucg_displays]` (emitted only when non-empty). `setGraphicsEntry` seeds firmware defaults when first populating an empty section. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
 | `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, writes `.nodemcu-vscode-managed-firmware.json` marker. |
 | `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target. `DEFAULT_PREBUILT_RELEASE` carries two independent tags: `releaseTag` (the GitHub release URL the assets are downloaded from, e.g. `v0.3.1`) and `firmwareTag` (the firmware fork tag embedded in the asset filename + used as the cache key, e.g. `v3.1.2`). Assets are built by the firmware repo's `luac-cross-release.yml` (not this repo). See §5.5. |
@@ -232,7 +250,7 @@ Extension Development Host (see §9).
 | `src/status/statusBar.ts` | `StatusEmitter` | `EventEmitter` subclass; states: `idle`, `configuring`, `building`, `flashing`, `uploading`, `success`, `error`. |
 | `src/device/serialDeviceClient.ts` | `SerialDeviceClient` | The **active** upload/download/list/remove/run/format path over the shared serial session (the `DirectSerialUploader` is now only a fallback/test class). See §10 for the streaming upload protocol and the NodeMCU REPL constraints it must respect. |
 | `src/upload/nodemcuTool.ts` | `NodemcuTool` | Spawns `node <bin/nodemcu-tool.js>`; honors `NODEMCU_VSCODE_NODEMCU_TOOL` env var (path to script) for test injection. `listFiles` parses JSON first, falls back to text. |
-| `src/util/paths.ts` | `resolveFirmwarePath`, `defaultBuildDir`, `userModulesHeader`, `esptoolScript`, `luaModulesDir`, `appModulesDir`, `binOutput`, `cModuleNameFromFile`, `isOptionalCModule` | Pure path helpers; no I/O except `fs.existsSync` for the optional C-module check. |
+| `src/util/paths.ts` | `resolveFirmwarePath`, `defaultBuildDir`, `userModulesHeader`, `userConfigHeader`, `u8g2FontsHeader`, `u8g2DisplaysHeader`, `ucgConfigHeader`, `esptoolScript`, `luaModulesDir`, `appModulesDir`, `binOutput`, `cModuleNameFromFile`, `isOptionalCModule` | Pure path helpers; no I/O except `fs.existsSync` for the optional C-module check. |
 | `src/util/shell.ts` | `Shell`, `quoteArg`, `formatCommand`, `CommandSpec` | `spawn`-based; `windowsHide: true` by default; `which` uses `where` on Windows, `which` elsewhere. |
 
 ---
@@ -251,7 +269,10 @@ Extension Development Host (see §9).
   - `nodemcu.cModules` — C Modules (checkboxes)
   - `nodemcu.serialConsole` — bottom-panel WebviewView (`type: "webview"`) for the shared Serial Console.
 - **Commands**: prefixed `nodemcu-vscode.*`, including `uploadAndMonitor`,
-  `openLiveDeviceFile`, and `acceptLuaModuleCompletion`. Keybindings:
+  `openLiveDeviceFile`, `acceptLuaModuleCompletion`, and the quick-fix/completion
+  helpers `enableCModuleFromFix`, `enableLuaModuleFromFix`,
+  `enableU8g2FontFromFix`, `enableUcgFontFromFix` (hidden from the palette via
+  `commandPalette` `when: false` — they take an argument). Keybindings:
   `Ctrl+Shift+B` (build), `Ctrl+Alt+B` (build & flash), `F5` (upload and keep
   Serial Console focused), and `Delete` / `Backspace` in Device Files.
 - **Context menus**: `view/item/context` adds `uploadFile` (Lua modules),
@@ -265,6 +286,11 @@ Extension Development Host (see §9).
   - `autoInstallNodemcuTool` (default `true`), `outputVerbose` (default `false`).
 - **Snippets** (`resources/snippets/lua.json`): `ninit`, `nwifi`, `nmqtt`, `nhttp`, `ntmr`.
 - **extensionPack**: `sumneko.lua` (suggested, not required).
+- **Language features (Lua)**: a `nodemcu` diagnostic collection warns on
+  disabled C/Lua modules and uncompiled/unknown `u8g2.font_*` / `ucg.font_*`
+  references, with quick-fixes (`NodemcuLuaCodeActionProvider`) that edit
+  `nodemcu.ini`; `FontCompletionProvider` completes fonts and enables the picked
+  one on accept. See `src/lua/` + `src/build/graphicsConfigWriter.ts`.
 
 ### 5.2 `nodemcu.ini` sections
 
@@ -301,6 +327,17 @@ extra_files = spiffs.bin@0x100000  # comma list of "path@offset"
 parallel = true
 verbose = false
 ssl_buffer_size = 4096             # mbed TLS record buffer when tls/CLIENT_SSL is on
+
+# Optional graphics sections (key = bare name, value = true). Omit/empty → keep
+# the firmware header default. The build regenerates the matching header table.
+[u8g2_fonts]                       # font_* names (no u8g2_ prefix) → u8g2_fonts.h
+font_6x10_tf = true
+[u8g2_displays]                    # binding name → u8g2_displays.h (I2C/SPI auto-routed)
+ssd1306_i2c_128x64_noname = true
+[ucg_fonts]                        # font_* names (no ucg_ prefix) → ucg_config.h
+font_ncenR14_hr = true
+[ucg_displays]                     # binding name → ucg_config.h
+ili9341_18x240x320_hw_spi = true
 ```
 
 The `resources/templates/nodemcu.ini` is the bootstrap template. The default

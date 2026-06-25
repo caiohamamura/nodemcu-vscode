@@ -2,6 +2,28 @@
 
 All notable changes to the NodeMCU VSCode extension are documented here.
 
+## [0.4.0] - 2026-06-25
+
+### Added
+- **Config-aware Lua diagnostics with quick-fixes.** Open Lua files are now
+  checked against `nodemcu.ini` + the firmware catalog. Warnings appear for: a
+  C-module global used but not enabled in `[c_modules]`, a `require()`d Lua
+  module missing from `[lua_modules]`, and a `u8g2.font_*` / `ucg.font_*`
+  reference that is either not compiled into the image or unknown to the font
+  library. Each fixable warning offers a quick-fix that edits `nodemcu.ini`
+  (font fixes seed the firmware-default fonts first and also enable the
+  `u8g2`/`ucg` C module). See `src/lua/`.
+- **Font autocomplete.** Typing `u8g2.font_` / `ucg.font_` completes from the
+  full firmware font catalog; already-compiled fonts sort first, and accepting a
+  not-yet-compiled font enables it in `nodemcu.ini` on accept.
+- **Manageable u8g2/ucg fonts & display drivers.** New `[u8g2_fonts]`,
+  `[u8g2_displays]`, `[ucg_fonts]` and `[ucg_displays]` sections control which
+  fonts/drivers get compiled in. The build regenerates the active table block in
+  `app/include/u8g2_fonts.h`, `u8g2_displays.h` (I2C/SPI auto-routed) and
+  `ucg_config.h`, leaving each header's commented driver catalog intact. An empty
+  section preserves the firmware default; a change forces a reconfigure like the
+  other `user_config.h` toggles.
+
 ## [0.3.5] - 2026-06-24
 
 ### Fixed

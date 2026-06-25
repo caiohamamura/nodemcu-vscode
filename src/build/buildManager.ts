@@ -3,8 +3,9 @@ import * as path from "node:path";
 import { Shell } from "../util/shell";
 import { ToolchainLocator, cmakeConfigureCommand, cmakeBuildCommand } from "./toolchain";
 import { writeUserModulesHeader, diffSelectedModules, readSelectedModules, writeUserConfigSsl, writeUserConfigLfs, writeUserConfigBitRate, isTlsEnabled } from "./userModulesWriter";
+import { writeU8g2FontsHeader, writeU8g2DisplaysHeader, writeUcgConfigHeader } from "./graphicsConfigWriter";
 import { parseProblems, summarize } from "./outputParser";
-import { appModulesDir, defaultBuildDir, userModulesHeader, userConfigHeader, binOutput, toolchainBinDirs, luacCrossPath } from "../util/paths";
+import { appModulesDir, defaultBuildDir, userModulesHeader, userConfigHeader, u8g2FontsHeader, u8g2DisplaysHeader, ucgConfigHeader, binOutput, toolchainBinDirs, luacCrossPath } from "../util/paths";
 import { luacFlavour, writeInstalledLuacFlavour } from "../firmware/prebuiltLuacCross";
 import type { NodemcuConfig } from "../config/nodemcuIni";
 import type { CompileProblem } from "./outputParser";
@@ -57,6 +58,14 @@ export class BuildManager {
     // default. This is a source edit (user_config.h), so a change forces a
     // reconfigure + reflash like the SSL/LFS toggles above.
     const bitRateChanged = writeUserConfigBitRate(userConfigHeader(ctx.firmwarePath), ctx.config.nodemcu.baud);
+    // Regenerate the u8g2/ucg font + display tables from the nodemcu.ini graphics
+    // sections. Like the user_config.h toggles above these are source-header
+    // edits, so a change must force a reconfigure + reflash. Empty sections are
+    // a no-op (the writers preserve the firmware's shipped defaults).
+    const u8g2FontsChanged = writeU8g2FontsHeader(u8g2FontsHeader(ctx.firmwarePath), ctx.config);
+    const u8g2DisplaysChanged = writeU8g2DisplaysHeader(u8g2DisplaysHeader(ctx.firmwarePath), ctx.config, ctx.firmwarePath);
+    const ucgChanged = writeUcgConfigHeader(ucgConfigHeader(ctx.firmwarePath), ctx.config, ctx.firmwarePath);
+    const graphicsChanged = u8g2FontsChanged || u8g2DisplaysChanged || ucgChanged;
     const buildDir = defaultBuildDir(ctx.firmwarePath);
     const modulesSrcDir = appModulesDir(ctx.firmwarePath);
     // A build dir counts as "configured" only if CMake finished the generate
@@ -78,7 +87,7 @@ export class BuildManager {
     // device's LFS loader rejects, so treat a Lua-flavour change as needing a
     // reconfigure.
     const luaFlavourChanged = !buildDirMissing && this.luaFlavourChanged(buildDir, ctx.config);
-    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0 || sslChanged || lfsChanged || bitRateChanged || luaFlavourChanged;
+    const needsReconfigure = buildDirMissing || diff.added.length > 0 || diff.removed.length > 0 || sslChanged || lfsChanged || bitRateChanged || luaFlavourChanged || graphicsChanged;
     if (needsReconfigure) {
       // The firmware is a CMake superbuild: the real compile runs inside an
       // ExternalProject whose build step is gated by stamp files that the

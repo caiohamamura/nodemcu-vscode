@@ -41,7 +41,20 @@ export interface NodemcuConfig {
   lua_modules: Record<string, string>;
   flash: { extra_files: FlashExtraFile[] };
   build: { parallel: boolean; verbose: boolean; ssl_buffer_size: number; lfs_size: number };
+  // Which u8g2/ucg fonts and display drivers get compiled into the firmware.
+  // Keyed by the bare name (font without the `u8g2_`/`ucg_` prefix, display by
+  // its binding name) → enabled. These map onto the firmware's hand-edited
+  // app/include/u8g2_fonts.h, u8g2_displays.h and ucg_config.h tables, which
+  // the build regenerates from this config (see build/graphicsConfigWriter.ts).
+  // An empty section means "leave the firmware header at its shipped default".
+  u8g2_fonts: Record<string, boolean>;
+  u8g2_displays: Record<string, boolean>;
+  ucg_fonts: Record<string, boolean>;
+  ucg_displays: Record<string, boolean>;
 }
+
+export const GRAPHICS_SECTIONS = ["u8g2_fonts", "u8g2_displays", "ucg_fonts", "ucg_displays"] as const;
+export type GraphicsSection = (typeof GRAPHICS_SECTIONS)[number];
 
 // mbed TLS record buffer size used when the tls module enables CLIENT_SSL. This
 // matches the firmware-shipped default of 4096; users can raise it to 8192/16384
@@ -83,7 +96,19 @@ export function defaultConfig(): NodemcuConfig {
     lua_modules: {},
     flash: { extra_files: [] },
     build: { parallel: true, verbose: false, ssl_buffer_size: DEFAULT_SSL_BUFFER_SIZE, lfs_size: 0 },
+    u8g2_fonts: {},
+    u8g2_displays: {},
+    ucg_fonts: {},
+    ucg_displays: {},
   };
+}
+
+function parseBoolSection(raw: Record<string, unknown> | undefined): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(raw ?? {})) {
+    out[key] = coerceBool(value, true);
+  }
+  return out;
 }
 
 function coerceBool(v: unknown, fallback: boolean): boolean {
@@ -175,6 +200,11 @@ export function parseIni(content: string): NodemcuConfig {
   const lfsSize = coerceNumber(b.lfs_size, 0);
   config.build.lfs_size = lfsSize > 0 ? Math.floor(lfsSize) : 0;
 
+  config.u8g2_fonts = parseBoolSection(raw.u8g2_fonts as Record<string, unknown> | undefined);
+  config.u8g2_displays = parseBoolSection(raw.u8g2_displays as Record<string, unknown> | undefined);
+  config.ucg_fonts = parseBoolSection(raw.ucg_fonts as Record<string, unknown> | undefined);
+  config.ucg_displays = parseBoolSection(raw.ucg_displays as Record<string, unknown> | undefined);
+
   return config;
 }
 
@@ -220,6 +250,14 @@ export function serializeIni(config: NodemcuConfig): string {
     ssl_buffer_size: config.build.ssl_buffer_size,
     lfs_size: config.build.lfs_size > 0 ? `0x${config.build.lfs_size.toString(16)}` : 0,
   };
+  // Only emit graphics sections when they hold entries so existing projects that
+  // never touch fonts/displays keep a clean nodemcu.ini.
+  for (const section of GRAPHICS_SECTIONS) {
+    const entries = config[section];
+    if (Object.keys(entries).length === 0) continue;
+    out[section] = {};
+    for (const [k, v] of Object.entries(entries)) out[section][k] = v;
+  }
   return ini.stringify(out);
 }
 
@@ -278,6 +316,31 @@ export function setLuaModule(config: NodemcuConfig, name: string, source: string
     ...config,
     lua_modules: { ...config.lua_modules, [name]: source },
   };
+}
+
+/**
+ * Toggle a font/display entry in one of the graphics sections. When enabling an
+ * entry into a section that is still empty, `seedDefaults` (the entries currently
+ * compiled into the firmware header) are folded in first, so turning on a single
+ * extra font never silently drops the firmware's shipped defaults.
+ */
+export function setGraphicsEntry(
+  config: NodemcuConfig,
+  section: GraphicsSection,
+  name: string,
+  enabled: boolean,
+  seedDefaults: string[] = [],
+): NodemcuConfig {
+  const next: Record<string, boolean> = { ...config[section] };
+  if (enabled && Object.keys(next).length === 0) {
+    for (const def of seedDefaults) next[def] = true;
+  }
+  if (enabled) {
+    next[name] = true;
+  } else {
+    delete next[name];
+  }
+  return { ...config, [section]: next };
 }
 
 export function isLfsEnabled(config: NodemcuConfig): boolean {

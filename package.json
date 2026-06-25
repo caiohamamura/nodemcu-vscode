@@ -2,7 +2,7 @@
   "name": "nodemcu-vscode",
   "displayName": "NodeMCU Lua",
   "description": "Cross-platform Lua firmware development for NodeMCU/ESP8266: build, flash, upload, with workspace autosync (Ctrl+S).",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "publisher": "caiohamamura",
   "license": "MIT",
   "engines": {
@@ -125,6 +125,26 @@
         "category": "NodeMCU"
       },
       {
+        "command": "nodemcu-vscode.enableCModuleFromFix",
+        "title": "Enable C Module (quick fix)",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.enableLuaModuleFromFix",
+        "title": "Enable Lua Module (quick fix)",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.enableU8g2FontFromFix",
+        "title": "Compile u8g2 Font (quick fix)",
+        "category": "NodeMCU"
+      },
+      {
+        "command": "nodemcu-vscode.enableUcgFontFromFix",
+        "title": "Compile ucg Font (quick fix)",
+        "category": "NodeMCU"
+      },
+      {
         "command": "nodemcu-vscode.build",
         "title": "Build Firmware",
         "category": "NodeMCU"
@@ -242,6 +262,22 @@
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "nodemcu-vscode.enableCModuleFromFix",
+          "when": "false"
+        },
+        {
+          "command": "nodemcu-vscode.enableLuaModuleFromFix",
+          "when": "false"
+        },
+        {
+          "command": "nodemcu-vscode.enableU8g2FontFromFix",
+          "when": "false"
+        },
+        {
+          "command": "nodemcu-vscode.enableUcgFontFromFix",
+          "when": "false"
+        },
         {
           "command": "nodemcu-vscode.enableLfs",
           "when": "nodemcu.projectValid"
