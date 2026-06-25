@@ -192,6 +192,29 @@ export async function writeInstalledLuacFlavour(binaryPath: string, flavour: Lua
   await fsp.writeFile(luacFlavourMarkerPath(binaryPath), flavour, "utf-8");
 }
 
+/**
+ * Decide whether the luac.cross already sitting at the (flavour-agnostic) build
+ * path can be trusted for `flavour`. Prefers the marker written by both install
+ * paths; for an unmarked legacy binary (downloaded or built before markers
+ * existed) it falls back to running `-v`, which distinguishes Lua 5.1 from 5.3 —
+ * the common, image-breaking mismatch — but not integer vs float. That residual
+ * ambiguity is closed by the marker the next install writes.
+ *
+ * Returns false (→ caller refreshes from the flavour-keyed prebuilt cache) when
+ * the binary is missing, marked for a different flavour, or fails the version
+ * probe.
+ */
+export async function installedLuacMatchesFlavour(
+  binaryPath: string,
+  flavour: LuacFlavour,
+  target: PrebuiltTarget,
+): Promise<boolean> {
+  if (!fs.existsSync(binaryPath)) return false;
+  const marker = readInstalledLuacFlavour(binaryPath);
+  if (marker !== null) return marker === flavour;
+  return verifyLuacBinary(binaryPath, flavour, target);
+}
+
 async function exists(p: string): Promise<boolean> {
   try { await fsp.access(p); return true; } catch { return false; }
 }

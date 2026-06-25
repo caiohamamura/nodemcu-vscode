@@ -14,6 +14,7 @@ import {
   readInstalledLuacFlavour,
   writeInstalledLuacFlavour,
   luacFlavourMarkerPath,
+  installedLuacMatchesFlavour,
   DEFAULT_PREBUILT_RELEASE,
 } from "../../src/firmware/prebuiltLuacCross";
 import { defaultConfig, type NodemcuConfig } from "../../src/config/nodemcuIni";
@@ -227,6 +228,49 @@ describe("resolvePrebuiltLuacCross", () => {
     expect(readInstalledLuacFlavour(bin)).toBe("lua51-int");
     fs.writeFileSync(luacFlavourMarkerPath(bin), "bogus");
     expect(readInstalledLuacFlavour(bin)).toBeNull();
+  });
+});
+
+describe("installedLuacMatchesFlavour", () => {
+  const target = { platform: "linux", arch: "x64" } as const;
+  let tmpRoot: string;
+
+  beforeEach(async () => {
+    tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "luac-match-"));
+  });
+  afterEach(async () => {
+    await fsp.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  /** A fake luac.cross that prints the given Lua version banner from `-v`. */
+  function fakeBinary(name: string, versionLine: string): string {
+    const bin = path.join(tmpRoot, name);
+    fs.writeFileSync(bin, `#!/bin/sh\necho '${versionLine}'\n`, { mode: 0o755 });
+    return bin;
+  }
+
+  it("missing binary never matches", async () => {
+    expect(await installedLuacMatchesFlavour(path.join(tmpRoot, "nope"), "lua53", target)).toBe(false);
+  });
+
+  it("trusts the marker over the binary's -v output", async () => {
+    if (process.platform === "win32") return;
+    // Binary prints 5.1 but the marker claims lua53 → marker wins (we wrote it
+    // from a known config, so it's authoritative, incl. the int/float bit).
+    const bin = fakeBinary("luac.cross", "Lua 5.1.4");
+    await writeInstalledLuacFlavour(bin, "lua53");
+    expect(await installedLuacMatchesFlavour(bin, "lua53", target)).toBe(true);
+    expect(await installedLuacMatchesFlavour(bin, "lua51", target)).toBe(false);
+  });
+
+  it("falls back to -v for an unmarked legacy binary (the lua51-vs-lua53 bug)", async () => {
+    if (process.platform === "win32") return;
+    const lua51 = fakeBinary("luac.cross", "Lua 5.1.4");
+    // A lua51 download left over after the user switched nodemcu.ini to lua53:
+    // no marker, so the version probe must reject it.
+    expect(await installedLuacMatchesFlavour(lua51, "lua53", target)).toBe(false);
+    // ...and accept it when the project is still on lua51 (don't re-download).
+    expect(await installedLuacMatchesFlavour(lua51, "lua51", target)).toBe(true);
   });
 });
 
