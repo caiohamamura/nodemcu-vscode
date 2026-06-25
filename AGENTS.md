@@ -222,7 +222,7 @@ Extension Development Host (see §9).
 | `src/config/nodemcuIni.ts` | `parseIni`, `serializeIni`, `loadConfig`, `saveConfig`, `defaultConfig`, `setCModule`, `setLuaModule`, `getLuaModuleEntries` | Sections: `[nodemcu]`, `[c_modules]`, `[lua_modules]`, `[flash]`, `[build]`. |
 | `src/config/configWatcher.ts` | `ConfigWatcher` | `fs.watch` + 200ms debounce; swallows parse errors silently. |
 | `src/firmware/managedFirmware.ts` | `ensureManagedFirmware`, `MANAGED_FIRMWARE_TAG`, `MANAGED_FIRMWARE_URL` | Downloads zip, extracts, hydrates 3 submodules, writes `.nodemcu-vscode-managed-firmware.json` marker. |
-| `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target. `DEFAULT_PREBUILT_RELEASE` carries two independent tags: `releaseTag` (the GitHub release URL the assets are downloaded from, e.g. `v0.3.1`) and `firmwareTag` (the firmware fork tag embedded in the asset filename + used as the cache key, e.g. `v3.1.1`). Assets are built by the firmware repo's `luac-cross-release.yml` (not this repo). See §5.5. |
+| `src/firmware/prebuiltLuacCross.ts` | `resolvePrebuiltLuacCross`, `installPrebuiltLuacCross`, `luacFlavour`, `prebuiltAssetName`, `DEFAULT_PREBUILT_RELEASE` | Downloads + verifies a prebuilt `luac.cross` matching the Lua flavour (`lua51`/`lua51-int`/`lua53`) and host target. `DEFAULT_PREBUILT_RELEASE` carries two independent tags: `releaseTag` (the GitHub release URL the assets are downloaded from, e.g. `v0.3.1`) and `firmwareTag` (the firmware fork tag embedded in the asset filename + used as the cache key, e.g. `v3.1.2`). Assets are built by the firmware repo's `luac-cross-release.yml` (not this repo). See §5.5. |
 | `src/flash/flashManager.ts` | `FlashManager` | Prefers `firmware/tools/toolchains/esptool.py`; falls back to `python -m esptool`. Standard `0x00000` / `0x10000` mapping. |
 | `src/flash/serialDiscovery.ts` | `SerialDiscovery` | Tries `serialport`, then PowerShell `SerialPort::GetPortNames` on Windows, then `/dev/tty*` glob on Linux. Honors `NODEMCU_VSCODE_FAKE_SERIAL_PORTS` env var (JSON array of strings or `{path, manufacturer, ...}`). |
 | `src/luaApi/apiFiles.ts` | `generateLuaApiFile`, `generateLuaRc`, `writeLuaRc` | Hardcoded `KNOWN_GLOBALS` descriptions for ~30 modules; emits `---@meta` + `---@class NodeMCUModule` annotations. |
@@ -320,7 +320,7 @@ one of two ways:
    `lua51-int` (`-DLUA_NUMBER_INTEGRAL`), or `lua53` — so a downloaded `luac.cross`
    always matches the firmware's bytecode (`lua51-int` ships as `luac.cross.int`).
    Asset name: `luac-cross-<firmwareTag>-<flavour>-<platform>-<arch>.{tar.gz|zip}`,
-   keyed to `MANAGED_FIRMWARE_TAG` (`v3.1.1`) so the tool and firmware can't drift.
+   keyed to `MANAGED_FIRMWARE_TAG` (`v3.1.2`) so the tool and firmware can't drift.
    `resolvePrebuiltLuacCross` downloads, extracts (system `tar`, falls back to
    `extract-zip`), and runs `luac.cross -v` to **verify the flavour** before use;
    `installPrebuiltLuacCross` copies it to `luacCrossPath(fw)` so the rest of the
@@ -410,7 +410,7 @@ present to build locally.
 
 ### 5.3 Managed firmware
 
-- URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/v3.1.1.zip`
+- URL: `https://github.com/caiohamamura/nodemcu-firmware/archive/refs/tags/v3.1.2.zip`
 - Tag: `mbedtls-2.28.10-beta` (constant in `src/firmware/managedFirmware.ts`).
 - Storage: `context.globalStorageUri/fsPath/firmware/<tag>/`.
 - Marker file: `.nodemcu-vscode-managed-firmware.json` (presence = ready).

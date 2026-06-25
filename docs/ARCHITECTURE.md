@@ -149,15 +149,15 @@ regenerates the header → next build reconfigures.
 
 ### 4.1 Managed firmware (`firmware/managedFirmware.ts`)
 `ensureManagedFirmware()` downloads `MANAGED_FIRMWARE_URL` (tag `MANAGED_FIRMWARE_TAG`,
-currently `v3.1.1`), extracts it, hydrates three submodules, and writes a
+currently `v3.1.2`), extracts it, hydrates three submodules, and writes a
 `.nodemcu-vscode-managed-firmware.json` marker so it isn't redone.
 
 ### 4.2 LFS & Lua flavour (`firmware/prebuiltLuacCross.ts`)
 `luacFlavour(config)` resolves one of `lua51` / `lua51-int` / `lua53`.
 `DEFAULT_PREBUILT_RELEASE` carries **two independent tags**:
-- `releaseTag` — the GitHub release the asset is downloaded from (e.g. `v3.1.1`).
+- `releaseTag` — the GitHub release the asset is downloaded from (e.g. `v3.1.2`).
 - `firmwareTag` — the firmware fork tag embedded in the asset filename and used as
-  the cache key (e.g. `v3.1.1`).
+  the cache key (e.g. `v3.1.2`).
 
 `resolvePrebuiltLuacCross()` downloads + verifies the right binary for the flavour
 and host (`currentPrebuiltTarget()`). Prebuilt assets are produced by the firmware
