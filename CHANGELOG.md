@@ -2,6 +2,17 @@
 
 All notable changes to the NodeMCU VSCode extension are documented here.
 
+## [0.3.4] - 2026-06-24
+
+### Changed
+- **Managed firmware updated from v3.1.1 to v3.1.2.** The extension now
+  downloads and caches the `v3.1.2` firmware release. Prebuilt `luac.cross`
+  binaries are fetched from the matching release automatically.
+- **`buildHostTools` parameter changed from boolean to tristate.** LFS
+  configure now passes `BUILD_HOST_TOOLS=AUTO` so host tools build locally
+  when a C compiler exists but are silently skipped otherwise (prebuilt binary
+  covers the missing-compiler case). Normal firmware builds keep `OFF`.
+
 ## [Unreleased]
 
 ### Fixed
