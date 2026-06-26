@@ -574,7 +574,26 @@ Don't try to "overwrite" an existing release by re-tagging.
 - `tests/e2e/*.test.ts` — run only when prerequisites are met (skipped otherwise,
   so `npm test` stays green):
   - `device_cdp_e2e.test.ts` — CDP-driven full UI flow against a real ESP8266
-    (`NODEMCU_VSCODE_E2E_HARDWARE=1` + VS Code CLI).
+    (`NODEMCU_VSCODE_E2E_HARDWARE=1` + VS Code CLI). The serial read defaults to
+    **460800** baud (the Initialize-Project template baud — the device REPL runs
+    there, not 115200; reading at 115200 yields empty/garbage lines), overridable
+    via `NODEMCU_VSCODE_E2E_SERIAL_BAUD`. On headless Linux the EDH is launched
+    with `--no-sandbox` (Electron's user-namespace sandbox is usually unavailable
+    there; without it the renderer never starts and the remote-debugging port
+    never serves a page). Hardware-verified on Linux/Xvfb: 6/6.
+  - `tls_cdp_e2e.test.ts` — CDP-driven TLS path through the real extension UI
+    (companion to `tls_buffer_size_e2e`): Initialize Project (lua51) → enable the
+    `tls` core C module + `ssl_buffer_size` in `nodemcu.ini` → write a TLS init.lua
+    (Wi-Fi join + one `http.get`) → run **Build & Flash** → shut the EDH down to
+    free the serial port → read the device directly and assert the HTTPS request
+    returned a real status code (TLS handshake completed at that buffer size).
+    Needs `NODEMCU_VSCODE_E2E_HARDWARE=1` + VS Code CLI + `NODEMCU_VSCODE_E2E_WIFI_SSID`;
+    `NODEMCU_VSCODE_E2E_SSL_SIZE` (default `8192`), `NODEMCU_VSCODE_E2E_TLS_URL`
+    (default `https://example.com/`). The editor-typing and `Release Serial Port`
+    paths are flaky headless (focus + native port-lock races), so this test drives
+    Build & Flash off-disk via a retry-until-started palette runner and frees the
+    port by shutting the EDH down before reading. Hardware-verified on a real
+    ESP8266: `8192` → HTTPS `200` over Wi-Fi (`Lua 5.1.4`).
   - `tls_buffer_size_e2e.test.ts` — CDP-free; builds+flashes per `[build]
     ssl_buffer_size` with `tls` enabled, runs the upstream `scratch_https.lua`
     (`http.get`) and `scratch_https3.lua` (`http.get_stream`) HTTPS scripts on the

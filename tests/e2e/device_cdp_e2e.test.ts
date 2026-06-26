@@ -28,7 +28,11 @@ import * as child_process from "node:child_process";
 import { SerialPort } from "serialport";
 
 const PORT = process.env.NODEMCU_VSCODE_E2E_SERIAL_PORT || (process.platform === "win32" ? "COM7" : "/dev/ttyUSB0");
-const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "115200");
+// The device REPL runs at the baud the extension's Initialize Project writes
+// (resources/templates/nodemcu.ini → 460800), NOT the 115200 console default, so a
+// direct serial read must use 460800 or it gets only garbage/empty lines. Override
+// with NODEMCU_VSCODE_E2E_SERIAL_BAUD if the template baud changes.
+const BAUD_RATE = Number(process.env.NODEMCU_VSCODE_E2E_SERIAL_BAUD || "460800");
 const DEBUG_PORT = Number(process.env.NODEMCU_VSCODE_E2E_CDP_PORT || "9240");
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const WORKSPACE_DIR = path.join(os.tmpdir(), `nodemcu-vscode-e2e-ws-${RUN_ID}`);
@@ -265,6 +269,10 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
       [
         "--new-window",
         "--disable-workspace-trust",
+        // Linux CI/headless hosts often lack the user-namespace sandbox Electron
+        // needs; without --no-sandbox the renderer never starts and the remote
+        // debugging port never serves a page (getDebuggerUrl times out).
+        ...(process.platform === "linux" ? ["--no-sandbox"] : []),
         `--user-data-dir=${USER_DATA_DIR}`,
         `--extensions-dir=${EXTENSIONS_DIR}`,
         `--extensionDevelopmentPath=${extensionPath}`,
@@ -509,14 +517,23 @@ describe_("NodeMCU e2e (CDP + hardware)", () => {
     `);
   }
 
-  /** Run a command-palette command by label (F1 → type → Enter). */
+  /** Run a command-palette command by label (F1 → type → Enter). Hardened for
+   *  headless EDH: F1 can be slow to open the quick-input, so wait for the input
+   *  element (re-pressing F1) before typing instead of assuming it exists. */
   async function runPaletteCommand(label: string): Promise<void> {
     await pressKey(0x1b, "Escape", "Escape");
     await sleep(150);
-    await pressKey(0x70, "F1", "F1");
-    await sleep(600);
+    let inputReady = false;
+    for (let attempt = 0; attempt < 6 && !inputReady; attempt++) {
+      await pressKey(0x70, "F1", "F1");
+      for (let i = 0; i < 12 && !inputReady; i++) {
+        inputReady = await client.evaluate(`(() => !!document.querySelector('.quick-input-box input'))()`);
+        if (!inputReady) await sleep(150);
+      }
+    }
+    if (!inputReady) throw new Error("command palette did not open");
     await client.evaluate(
-      `(() => { const i = document.querySelector('.quick-input-box input'); i.focus(); i.value = ${JSON.stringify(`>${label}`)}; i.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+      `(() => { const i = document.querySelector('.quick-input-box input'); if (!i) return; i.focus(); i.value = ${JSON.stringify(`>${label}`)}; i.dispatchEvent(new Event('input', { bubbles: true })); })()`,
     );
     for (let i = 0; i < 40; i++) {
       const ready = await client.evaluate(`
