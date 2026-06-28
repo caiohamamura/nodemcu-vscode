@@ -167,6 +167,22 @@ export class ManagedLuaServer {
       return;
     }
 
+    // Patch template.lua to prevent config parser crashes on string files.exclude values
+    const destDir = path.dirname(path.dirname(binaryPath));
+    const templateLuaPath = path.join(destDir, "script", "config", "template.lua");
+    try {
+      if (fs.existsSync(templateLuaPath)) {
+        let content = fs.readFileSync(templateLuaPath, "utf-8");
+        if (content.includes("self.sep")) {
+          content = content.replace("self.sep", "(self.sep or ',')");
+          fs.writeFileSync(templateLuaPath, content, "utf-8");
+          this.outputChannel.appendLine(`Patched template.lua at ${templateLuaPath}`);
+        }
+      }
+    } catch (e) {
+      this.outputChannel.appendLine(`Failed to patch template.lua: ${e instanceof Error ? e.message : e}`);
+    }
+
     this.outputChannel.appendLine(`Starting Lua Language Server from: ${binaryPath}`);
 
     const { LanguageClient, TransportKind } = await import("vscode-languageclient/node");
@@ -179,6 +195,23 @@ export class ManagedLuaServer {
     const clientOptions: LanguageClientOptions = {
       documentSelector: [{ scheme: "file", language: "lua" }],
       outputChannel: this.outputChannel,
+      middleware: {
+        workspace: {
+          configuration: async (params, token, next) => {
+            const result = await next(params, token);
+            if (Array.isArray(result)) {
+              return result.map((item, idx) => {
+                const section = params.items[idx]?.section;
+                if ((section === "files.exclude" || section === "files.associations") && typeof item === "string") {
+                  return {};
+                }
+                return item;
+              });
+            }
+            return result;
+          }
+        }
+      }
     };
 
     const client = new LanguageClient(
