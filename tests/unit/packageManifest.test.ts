@@ -4,7 +4,7 @@ import manifest from "../../package.json";
 describe("package manifest", () => {
   it("does not hard-block activation on optional language tooling", () => {
     expect(manifest).not.toHaveProperty("extensionDependencies");
-    expect(manifest.extensionPack).toContain("sumneko.lua");
+    expect(manifest).not.toHaveProperty("extensionPack");
   });
 
   it("contributes workspace-backed NodeMCU side views and the serial bottom panel", () => {

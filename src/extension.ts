@@ -46,14 +46,17 @@ import { PythonManager } from "./python/pythonManager";
 import { listLuaModulesFromFirmware, listCModules, selectMainFileForConfig, type LuaModuleInfo, type CModuleInfo } from "./luaPicker/moduleList";
 import { createLuaModuleCompletionItem, luaModuleSource } from "./luaPicker/luaModuleCompletion";
 import { resolveAllLuaModules } from "./luaPicker/luaModuleResolver";
-import { generateLuaApiFile, writeLuaRc } from "./luaApi/apiFiles";
+import { writeLuaRc } from "./luaApi/apiFiles";
 import { ensureManagedFirmware } from "./firmware/managedFirmware";
 import { resolvePrebuiltLuacCross, installPrebuiltLuacCross, luacFlavour, readInstalledLuacFlavour, installedLuacMatchesFlavour, currentPrebuiltTarget } from "./firmware/prebuiltLuacCross";
 import { ensureCMake, ensureNinja } from "./tools/managedTools";
 import { SerialSessionManager } from "./serial/serialSessionManager";
 import { SerialConsoleViewProvider } from "./serial/serialConsoleView";
+import { ManagedLuaServer } from "./lua/managedLuaServer";
+import { mapFirmwareAPI, generateEmmyLuaStub, generateMarkdownReport } from "./firmware/firmwareMapper";
 
 let outputChannel: vscode.OutputChannel;
+let managedLuaServer: ManagedLuaServer | undefined;
 let statusEmitter: StatusEmitter;
 let portStatusBarItem: vscode.StatusBarItem;
 let queueStatusBarItem: vscode.StatusBarItem;
@@ -1909,13 +1912,62 @@ async function doRegenerateLuaApi(): Promise<void> {
   if (!cfg || !fw) return;
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
-  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Regenerating Lua API files...`);
-  const modules = Object.entries(cfg.c_modules).filter(([_, v]) => v).map(([k]) => k);
-  const apiPath = path.join(workspaceRoot, ".vscode", "nodemcu-api.lua");
-  generateLuaApiFile({ modules, outputPath: apiPath });
-  const luaDirs = [luaModulesDir(fw), path.join(workspaceRoot, "lua")];
-  writeLuaRc({ workspaceRoot, luaModulesDirs: luaDirs, apiFile: apiPath });
-  vscode.window.showInformationMessage(`Generated ${apiPath}`);
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Regenerating Lua API files from firmware...`);
+  try {
+    const modules = await mapFirmwareAPI(fw);
+    const apiPath = path.join(workspaceRoot, ".vscode", "nodemcu-api.lua");
+    const stubContent = generateEmmyLuaStub(modules);
+    fs.mkdirSync(path.dirname(apiPath), { recursive: true });
+    fs.writeFileSync(apiPath, stubContent, "utf-8");
+
+    const luaDirs = [luaModulesDir(fw), path.join(workspaceRoot, "lua")];
+    writeLuaRc({ workspaceRoot, luaModulesDirs: luaDirs, apiFile: apiPath });
+    vscode.window.showInformationMessage(`Generated ${apiPath}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    vscode.window.showErrorMessage(`Failed to regenerate Lua API: ${msg}`);
+  }
+}
+
+async function doMapFirmware(): Promise<void> {
+  const cfg = getConfigOrNull();
+  if (!cfg) {
+    vscode.window.showErrorMessage("No nodemcu.ini found in workspace. Run 'NodeMCU: Initialize Project' first.");
+    return;
+  }
+  const fw = await getFirmwarePath();
+  if (!fw) return;
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) return;
+
+  outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Mapping firmware C and Lua modules...`);
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "NodeMCU: Mapping Firmware API", cancellable: false },
+    async () => {
+      try {
+        const modules = await mapFirmwareAPI(fw);
+        const reportPath = path.join(workspaceRoot, "firmware_map.md");
+        const reportContent = generateMarkdownReport(modules);
+        fs.writeFileSync(reportPath, reportContent, "utf-8");
+
+        const apiPath = path.join(workspaceRoot, ".vscode", "nodemcu-api.lua");
+        const stubContent = generateEmmyLuaStub(modules);
+        fs.mkdirSync(path.dirname(apiPath), { recursive: true });
+        fs.writeFileSync(apiPath, stubContent, "utf-8");
+
+        const luaDirs = [luaModulesDir(fw), path.join(workspaceRoot, "lua")];
+        writeLuaRc({ workspaceRoot, luaModulesDirs: luaDirs, apiFile: apiPath });
+
+        const doc = await vscode.workspace.openTextDocument(reportPath);
+        await vscode.window.showTextDocument(doc);
+
+        vscode.window.showInformationMessage("Mapped firmware API: created firmware_map.md and updated .vscode/nodemcu-api.lua");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Failed to map firmware: ${msg}`);
+      }
+    }
+  );
 }
 
 async function doAddLuaModule(item?: { module: LuaModuleInfo }): Promise<void> {
@@ -2356,6 +2408,8 @@ function scheduleSrcSync(document: vscode.TextDocument): void {
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
   outputChannel = vscode.window.createOutputChannel("NodeMCU");
+  managedLuaServer = new ManagedLuaServer();
+  void managedLuaServer.start(context);
   serialAutoConnectSuppressed = context.workspaceState.get<boolean>(SERIAL_AUTO_CONNECT_SUPPRESSED_KEY) ?? false;
   void ensurePython(context);
   commandQueue = new CommandQueue();
@@ -2542,6 +2596,7 @@ export function activate(context: vscode.ExtensionContext): void {
       outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] Queued commands cancelled`);
     }),
     vscode.commands.registerCommand("nodemcu-vscode.regenerateLuaApi", doRegenerateLuaApi),
+    vscode.commands.registerCommand("nodemcu-vscode.mapFirmware", doMapFirmware),
     vscode.commands.registerCommand("nodemcu-vscode.addLuaModule", doAddLuaModule),
     vscode.commands.registerCommand("nodemcu-vscode.toggleLuaModule", doToggleLuaModule),
     vscode.commands.registerCommand("nodemcu-vscode.toggleCModule", doToggleCModule),
@@ -2580,4 +2635,7 @@ export async function deactivate(): Promise<void> {
   if (portRefreshTimer) clearInterval(portRefreshTimer);
   watcher?.stop();
   await serialSessionManager?.closeAll();
+  if (managedLuaServer) {
+    await managedLuaServer.stop();
+  }
 }
